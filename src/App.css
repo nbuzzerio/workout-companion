@@ -24,3 +24,12 @@
   margin: 1.75rem 0 0;
   color: #53635b;
 }
+button, input { font: inherit; padding: .55rem; border: 1px solid #698273; border-radius: .35rem; max-width: 100%; }
+button { margin: .4rem .4rem .4rem 0; cursor: pointer; background: #e3eee7; color: #173f32; }
+button:disabled { cursor: default; opacity: .6; }
+input { width: 10rem; display: block; background: white; color: #173f32; }
+fieldset { min-width: 0; margin: 1rem 0; border: 1px solid #bccdc2; border-radius: .5rem; }
+legend { font-weight: 700; }
+.set { display: flex; flex-wrap: wrap; gap: .8rem; align-items: center; margin-bottom: .8rem; }
+[role="alert"] { color: #8a2020; border-left: 4px solid; padding: .7rem; }
+:focus-visible { outline: 3px solid #326cba; outline-offset: 3px; }
