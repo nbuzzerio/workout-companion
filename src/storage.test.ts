@@ -26,11 +26,12 @@ test.skipIf(!globalThis.indexedDB)('native IndexedDB fresh/repeat open, restart 
   expect(await restarted.reopen(b.id)).toEqual(b)
   expect(await restarted.list()).toHaveLength(2)
   const put = vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore) {
+    const request = this.get('abort-probe')
     this.transaction.abort()
-    throw new Error('Injected transaction failure')
+    return request
   })
   try {
-    await expect(restarted.save(updateSet(changed, 'extension', 0, { kind: 'machine', position: 'P20', reps: 1 }))).rejects.toThrow('Injected transaction failure')
+    await expect(restarted.save(updateSet(changed, 'extension', 0, { kind: 'machine', position: 'P20', reps: 1 }))).rejects.toThrow('Storage failed; nothing was saved.')
   } finally { put.mockRestore() }
   expect(await new SessionStore(open).reopen(changed.id)).toEqual(changed)
   const recovered = await restarted.save(updateSet(changed, 'extension', 0, { kind: 'machine', position: 'P13', reps: 6 }))

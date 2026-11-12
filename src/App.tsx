@@ -8,8 +8,7 @@ const draftKey = 'workout-companion-draft-v1'
 const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` }
 
-function App({ store = defaultStore }: { store?: SessionStore }) {
-  const [recovery] = useState(() => {
+function readRecovery() {
     try {
       const raw = localStorage.getItem(draftKey)
       if (!raw) return { draft: undefined, error: '' }
@@ -17,7 +16,11 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
       validateSession(draft)
       return { draft, error: '' }
     } catch { return { draft: undefined, error: 'Draft recovery unavailable. Existing draft data was retained; keep this page open until you save.' } }
-  })
+}
+
+function App({ store = defaultStore }: { store?: SessionStore }) {
+  const [recovery, setRecovery] = useState(readRecovery)
+  const [machineText, setMachineText] = useState<Record<string, string>>({})
   const [date, setDate] = useState(() => recovery.draft?.date ?? today())
   const [day, setDay] = useState('Mon')
   const [records, setRecords] = useState<Session[]>([])
@@ -54,11 +57,20 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
   }
   async function refresh() {
     setBusy(true)
-    try { await store.ensurePlan(demoPlan); setRecords(await store.list()); setError('') }
+    try {
+      await store.ensurePlan(demoPlan); setRecords(await store.list())
+      const next = readRecovery()
+      setRecovery(next); setError(next.error)
+      if (next.draft && !session) {
+        setSession(next.draft); setDate(next.draft.date); setDirty(true)
+        setMessage('Recovered draft - save to confirm it in workout history.')
+      }
+    }
     catch (e) { setError(`Storage unavailable: ${(e as Error).message} Your current edits remain on screen.`) }
     finally { setBusy(false) }
   }
   async function persist(complete: boolean) {
+    if (Object.values(machineText).some(value => !/^P\d+$/.test(value))) { setError('Enter a machine position such as P9 before saving.'); return }
     if (!session || !window.confirm(complete ? 'Save and complete this session? Completed history is read-only.' : 'Save this session on this device?')) return
     setBusy(true); setError(''); setMessage('Saving…')
     try {
@@ -93,13 +105,18 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
             <p className="notation"><strong>{session ? 'Current' : 'Plan'}</strong> {exercise.sets.map(formatSet).join(' | ')}</p>
             {session && <fieldset disabled={busy || finished} onFocusCapture={event => { if (event.target instanceof HTMLInputElement) event.target.select() }}><legend className="sr-only">{exercise.name} current sets</legend>{exercise.sets.map((set, i) => <div className="set" key={i}><span className="set-number">Set {i + 1}</span>
               {set.kind === 'weight' && <label>Dumbbell weight (lb)<input aria-label={`${exercise.name} set ${i + 1} pounds`} type="number" inputMode="decimal" min="0" step="any" value={set.pounds} onChange={e => edit(exercise.id, i, { ...set, pounds: e.target.valueAsNumber })} /></label>}
-              {set.kind === 'machine' && <label>Machine setting<input aria-label={`${exercise.name} set ${i + 1} machine position`} value={set.position} onChange={e => edit(exercise.id, i, { ...set, position: e.target.value })} /></label>}
+              {set.kind === 'machine' && <label>Machine setting<input aria-label={`${exercise.name} set ${i + 1} machine position`} value={machineText[`${session.id}:${exercise.id}:${i}`] ?? set.position} aria-invalid={machineText[`${session.id}:${exercise.id}:${i}`] !== undefined && !/^P\d+$/.test(machineText[`${session.id}:${exercise.id}:${i}`])} onChange={e => {
+                const value = e.target.value
+                setMachineText(text => ({ ...text, [`${session.id}:${exercise.id}:${i}`]: value }))
+                setDirty(true)
+                if (/^P\d+$/.test(value)) edit(exercise.id, i, { ...set, position: value })
+              }} onBlur={e => { if (!/^P\d+$/.test(e.target.value)) setError('Enter a machine position such as P9 before saving.') }} /></label>}
               {set.kind === 'hold' ? <label>Duration (seconds)<input aria-label={`${exercise.name} set ${i + 1} seconds`} type="number" min="0" step="any" value={set.seconds} onChange={e => edit(exercise.id, i, { ...set, seconds: e.target.valueAsNumber })} /></label> : <label>Repetitions<input aria-label={`${exercise.name} set ${i + 1} reps`} type="number" inputMode="numeric" min="0" step="1" value={set.reps} onChange={e => edit(exercise.id, i, { ...set, reps: e.target.valueAsNumber })} /></label>}
             </div>)}</fieldset>}
           </article>)}
           {session && !finished && <div className="actions"><button disabled={busy} onClick={() => void persist(false)}>Save session</button><button className="primary" disabled={busy} onClick={() => void persist(true)}>Save and complete</button>{dirty && <button disabled={busy} onClick={() => {
             if (!window.confirm('Discard unsaved changes? Saved history will be retained.')) return
-            try { localStorage.removeItem(draftKey); setSession(undefined); setDirty(false); setMessage('Unsaved changes discarded.'); setError('') }
+            try { localStorage.removeItem(draftKey); setSession(undefined); setMachineText({}); setDirty(false); setMessage('Unsaved changes discarded.'); setError('') }
             catch { setError('Could not clear the recovery draft. Your edits remain here.') }
           }}>Discard unsaved changes</button>}</div>}
         </>}
