@@ -1,0 +1,26 @@
+.welcome {
+  width: 100%;
+  max-width: 40rem;
+  padding: clamp(1.5rem, 5vw, 3rem);
+  border: 1px solid #dbe4df;
+  border-radius: 1rem;
+  background: #ffffff;
+}
+
+.welcome h1 {
+  margin: 0;
+  color: #173f32;
+  font-size: clamp(2rem, 7vw, 3rem);
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+.tagline {
+  margin: 1rem 0 0;
+  font-size: 1.125rem;
+}
+
+.readiness {
+  margin: 1.75rem 0 0;
+  color: #53635b;
+}
