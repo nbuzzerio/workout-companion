@@ -16,7 +16,11 @@ export async function openDatabase(name = 'workout-companion'): Promise<IDBDatab
   })
 }
 export class SessionStore {
-  constructor(private readonly open: () => Promise<IDBDatabase> = openDatabase) {}
+  private readonly open: () => Promise<IDBDatabase>
+
+  constructor(open: () => Promise<IDBDatabase> = openDatabase) {
+    this.open = open
+  }
   private async transaction<T>(store: string, mode: IDBTransactionMode, run: (object: IDBObjectStore, result: (value: T) => void, fail: (error: Error) => void) => void): Promise<T> {
     const db = await this.open()
     return new Promise<T>((resolve, reject) => {
