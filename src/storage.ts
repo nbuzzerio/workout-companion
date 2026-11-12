@@ -1,11 +1,11 @@
 import { validateSession, type Plan, type Session } from './workouts'
 
 // Initial additive schema. Never clear stores; reject unknown record versions.
-export async function openDatabase(): Promise<IDBDatabase> {
+export async function openDatabase(name = 'workout-companion'): Promise<IDBDatabase> {
   if (!globalThis.indexedDB) throw new Error('Local storage unavailable. Enable browser storage and retry.')
   return new Promise((resolve, reject) => {
     let blocked = false
-    const request = indexedDB.open('workout-companion', 1)
+    const request = indexedDB.open(name, 1)
     request.onupgradeneeded = () => {
       request.result.createObjectStore('plans', { keyPath: 'id' })
       request.result.createObjectStore('sessions', { keyPath: 'id' })
@@ -16,7 +16,7 @@ export async function openDatabase(): Promise<IDBDatabase> {
   })
 }
 export class SessionStore {
-  constructor(private readonly open = openDatabase) {}
+  constructor(private readonly open: () => Promise<IDBDatabase> = openDatabase) {}
   private async transaction<T>(store: string, mode: IDBTransactionMode, run: (object: IDBObjectStore, result: (value: T) => void, fail: (error: Error) => void) => void): Promise<T> {
     const db = await this.open()
     return new Promise<T>((resolve, reject) => {

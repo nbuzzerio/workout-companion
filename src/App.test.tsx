@@ -1,9 +1,9 @@
-﻿import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, test, vi } from 'vitest'
 import App from './App'
 import { SessionStore } from './storage'
 import { type Session } from './workouts'
-afterEach(() => { cleanup(); vi.restoreAllMocks() })
+afterEach(() => { cleanup(); localStorage.clear(); vi.restoreAllMocks() })
 function memoryStore() {
   const store = new SessionStore()
   const rows: Session[] = []
@@ -18,7 +18,7 @@ test('explicit confirmation and recoverable denied writes never report success',
   const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
   render(<App store={store} />)
   await screen.findByText('No saved sessions for this date.')
-  fireEvent.click(screen.getByRole('button', { name: 'Start DEMO session' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Start Workout' }))
   expect(screen.getByLabelText('Leg Extension set 1 machine position')).toBeDefined()
   expect(screen.getByLabelText('DB Deadlift set 1 pounds')).toBeDefined()
   fireEvent.click(screen.getByRole('button', { name: 'Save session' }))
@@ -34,7 +34,7 @@ test('component save, remount, reopen and accessible field labels using injected
   vi.spyOn(window, 'confirm').mockReturnValue(true)
   const first = render(<App store={store} />)
   await screen.findByText('No saved sessions for this date.')
-  fireEvent.click(screen.getByRole('button', { name: 'Start DEMO session' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Start Workout' }))
   fireEvent.change(screen.getByLabelText('DB Deadlift set 1 pounds'), { target: { value: '48' } })
   fireEvent.click(screen.getByRole('button', { name: 'Save session' }))
   await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Saved on this device.'))
@@ -43,4 +43,78 @@ test('component save, remount, reopen and accessible field labels using injected
   fireEvent.click(await screen.findByRole('button', { name: /DEMO .*active/ }))
   expect((screen.getByLabelText('DB Deadlift set 1 pounds') as HTMLInputElement).value).toBe('48')
   expect(screen.getByRole('region', { name: 'Current session' })).toBeDefined()
+})
+
+
+test('day switching preserves edits, draft remount restores values and completion locks the summary', async () => {
+  const store = memoryStore()
+  vi.spyOn(window, 'confirm').mockReturnValue(true)
+  const first = render(<App store={store} />)
+  await screen.findByText('No saved sessions for this date.')
+  fireEvent.click(screen.getByRole('button', { name: 'Start Workout' }))
+  fireEvent.change(screen.getByLabelText('DB Deadlift set 1 pounds'), { target: { value: '51.5' } })
+  fireEvent.change(screen.getByLabelText('DB Deadlift set 1 reps'), { target: { value: '9' } })
+  fireEvent.change(screen.getByLabelText('Leg Extension set 1 machine position'), { target: { value: 'P12' } })
+  fireEvent.click(screen.getByRole('button', { name: /Tue/ }))
+  expect(screen.getByText('No workout planned')).toBeDefined()
+  fireEvent.click(screen.getByRole('button', { name: /Mon Strength/ }))
+  expect((screen.getByLabelText('DB Deadlift set 1 pounds') as HTMLInputElement).value).toBe('51.5')
+  first.unmount()
+  render(<App store={store} />)
+  await screen.findByText(/Recovered draft/)
+  expect((screen.getByLabelText('DB Deadlift set 1 reps') as HTMLInputElement).value).toBe('9')
+  expect((screen.getByLabelText('Leg Extension set 1 machine position') as HTMLInputElement).value).toBe('P12')
+  fireEvent.click(screen.getByRole('button', { name: 'Save and complete' }))
+  await screen.findByText('Saved and completed on this device.')
+  expect(screen.getByText(/Workout finished/)).toBeDefined()
+  expect(screen.getByText(/3 exercises � 7 sets recorded/)).toBeDefined()
+  expect((screen.getByLabelText('DB Deadlift set 1 pounds') as HTMLInputElement).closest('fieldset')?.disabled).toBe(true)
+  expect(localStorage.getItem('workout-companion-draft-v1')).toBeNull()
+})
+
+test('discard cancellation retains the draft and denied draft storage never claims retention', async () => {
+  const store = memoryStore()
+  vi.spyOn(window, 'confirm').mockReturnValue(false)
+  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('denied') })
+  render(<App store={store} />)
+  await screen.findByText('No saved sessions for this date.')
+  fireEvent.click(screen.getByRole('button', { name: 'Start Workout' }))
+  expect(screen.getByRole('alert').textContent).toContain('Draft storage failed')
+  expect(screen.getByRole('status').textContent).toBe('Unsaved changes')
+  fireEvent.click(screen.getByRole('button', { name: 'Discard unsaved changes' }))
+  expect(screen.getByLabelText('DB Deadlift set 1 pounds')).toBeDefined()
+})
+
+test('saved active workout resumes and previous DEMO performance is separate from current sets', async () => {
+  const store = memoryStore()
+  const { createSession, demoPlan } = await import('./workouts')
+  const prior = createSession(demoPlan, '2026-11-01')
+  prior.status = 'completed'
+  prior.exercises[0].sets[0] = { kind: 'weight', pounds: 99, reps: 3 }
+  await store.save(prior)
+  const current = createSession(demoPlan, '2026-11-09')
+  await store.save(current)
+  render(<App store={store} />)
+  await screen.findByText(/No saved sessions for this date/)
+  fireEvent.change(screen.getByLabelText('Workout date'), { target: { value: current.date } })
+  fireEvent.click(screen.getByRole('button', { name: 'Resume Workout' }))
+  expect(screen.getByText(/2026-11-01: 99 lb/)).toBeDefined()
+  expect((screen.getByLabelText('DB Deadlift set 1 pounds') as HTMLInputElement).value).toBe('46')
+  expect(screen.getAllByText('Previous completed DEMO').length).toBe(3)
+})
+
+test('saved timed sets use explicit seconds rather than weight or repetition units', async () => {
+  const store = memoryStore()
+  const { createSession, demoPlan } = await import('./workouts')
+  const row = createSession(demoPlan, '2026-11-09')
+  row.exercises = [{ id: 'hold', name: 'Plank', sets: [{ kind: 'hold', seconds: 30 }] }]
+  await store.save(row)
+  render(<App store={store} />)
+  await waitFor(() => expect(store.list).toHaveBeenCalled())
+  fireEvent.change(screen.getByLabelText('Workout date'), { target: { value: row.date } })
+  fireEvent.click(await screen.findByRole('button', { name: 'Resume Workout' }))
+  fireEvent.change(screen.getByLabelText('Plank set 1 seconds'), { target: { value: '45' } })
+  expect(screen.getByText(/45 sec/)).toBeDefined()
+  expect(screen.queryByLabelText('Plank set 1 reps')).toBeNull()
+  expect(screen.queryByLabelText('Plank set 1 pounds')).toBeNull()
 })

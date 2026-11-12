@@ -1,4 +1,4 @@
-﻿import { expect, test } from 'vitest'
+import { expect, test } from 'vitest'
 import { createSession, demoPlan, formatSet, sourceExamples, updateSet, validateSession } from './workouts'
 import { openDatabase, SessionStore } from './storage'
 test('stable IDs, local calendar dates, ordered independent snapshots and machine positions', () => {
@@ -24,4 +24,23 @@ test('unavailable storage and denied database open reject writes', async () => {
   await expect(openDatabase()).rejects.toThrow('unavailable')
   const store = new SessionStore(async () => { throw new Error('Denied') })
   await expect(store.save(createSession(demoPlan, '2026-11-09'))).rejects.toThrow('Denied')
+})
+
+test('plan weekday, ordered sets, optional raw metadata and previous/current separation stay typed', () => {
+  expect(demoPlan.weekday).toBe(1)
+  expect(demoPlan.exercises[0].sets).toEqual([
+    { kind: 'weight', pounds: 46, reps: 10 },
+    { kind: 'weight', pounds: 55, reps: 10 },
+    { kind: 'weight', pounds: 63, reps: 10 },
+    { kind: 'weight', pounds: 72, reps: 8 },
+  ])
+  const plan = { ...structuredClone(demoPlan), weekday: 4 as const }
+  plan.exercises[0].musclesSource = 'chest:3,front-delts:2,triceps:1'
+  plan.exercises.push({ id: 'hold', name: 'Demo hold', sets: [{ kind: 'hold', seconds: 30 }] })
+  const prior = { ...createSession(plan, '2026-11-05'), status: 'completed' as const }
+  const current = updateSet(createSession(plan, '2026-11-12'), 'deadlift', 1, { kind: 'weight', pounds: 60, reps: 9 })
+  expect(prior.exercises[0].sets[1]).toEqual({ kind: 'weight', pounds: 55, reps: 10 })
+  expect(current.exercises[0].musclesSource).toBe('chest:3,front-delts:2,triceps:1')
+  expect(current.exercises.at(-1)?.sets).toEqual([{ kind: 'hold', seconds: 30 }])
+  expect(formatSet({ kind: 'hold', seconds: 30 })).toBe('30 sec')
 })
