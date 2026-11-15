@@ -1,45 +1,44 @@
-# Deployment setup and release protocol
+# Workout deployment onboarding and release protocol
 
-Production: **https://www.nickbuzzerio.com/apps/workout/**. The validated
-`config/app.ts` supplies `workout`, `/apps/workout/`, and the existing database
-name. The frontend is static; GitHub builds it and the Droplet serves `dist/`.
-Nothing in this integration changes the live Droplet or its existing site.
+Production remains **https://www.nickbuzzerio.com/apps/workout/**. App identity
+stays `workout`, `/apps/workout/`, and IndexedDB `workout-companion`. No frontend,
+storage, migration, or live Droplet changes are part of onboarding.
 
-## Owner-controlled GitHub setup
+Follow the [Windows onboarding guide](github-onboarding.md) for the exact
+`Initialize-WorkoutDeployment.ps1` command. It requires the confirmed SSH hostname
+and port, prompts for a temporary GitHub API token, configures the production
+environment and repository variables, and leaves `ENABLE_DEPLOYMENT=false`.
+The wrapper pins repository `nbuzzerio/workout-companion`, slug `workout`, origin
+`https://www.nickbuzzerio.com`, branch `main`, user `personal-deploy`, and the
+owner-verified ED25519 fingerprint
+`SHA256:n7iJc5pZSQW+qDGbDpkIOL0ipHwNSyWoujgL3+YE3y0`.
 
-1. Review and commit the integration, then run the workflow with deployment
-   disabled. Require the `check` job in branch protection.
-2. Create the **production** environment and restrict it to the production
-   branch. Add required reviewers if appropriate.
-3. Set repository variable `PUBLIC_ORIGIN` to `https://www.nickbuzzerio.com`
-   without a trailing slash or path. `PRODUCTION_BRANCH` defaults to `main`;
-   set it only if the intended production branch differs.
-4. Supply the existing dedicated deployment credentials as production
-   **environment secrets** using the table below. Keep keys out of source,
-   frontend variables, logs and artifacts.
-5. Only after CI and owner review, opt in by setting repository variable
-   `ENABLE_DEPLOYMENT` to exactly `true`. Keep it absent/false until then; this
-   task does not inspect or change GitHub variables or settings.
+## Configuration and owner review
 
-| Secret | Required value |
-| --- | --- |
-| `DEPLOY_HOST` | Droplet DNS name or IPv4 address, without protocol/user/path |
-| `DEPLOY_PORT` | SSH port; empty defaults to `22` |
-| `DEPLOY_USER` | Exactly `personal-deploy` |
-| `DEPLOY_SSH_KEY` | Existing dedicated restricted private key |
-| `DEPLOY_KNOWN_HOSTS` | Independently verified OpenSSH known_hosts entry for the host/port |
+Use repository **variables** `DEPLOY_HOST`, `DEPLOY_PORT`, `DEPLOY_USER`,
+`DEPLOY_HOST_FINGERPRINT`, `PUBLIC_ORIGIN`, `PRODUCTION_BRANCH` and
+`ENABLE_DEPLOYMENT`. Port has no default; the web hostname does not establish
+the SSH hostname. Only `DEPLOY_SSH_KEY` remains a deployment **secret**, entered
+manually by the owner under the production environment. The script never reads,
+prints, stores or uploads a private key and never accesses the secrets API.
 
-Do not configure these secrets during this task. Verify host keys through a
-trusted existing administrative channel; an unauthenticated `ssh-keyscan`
-result alone is insufficient. A nonstandard port needs `[HOST]:PORT` format.
-IPv6 literals are unsupported by the workflow; use a DNS hostname.
+The workflow discovers only the public ED25519 host key and compares its SHA256
+fingerprint against the independently established pin. Missing, incorrect,
+malformed or ambiguous results fail before upload. No stored known_hosts secret
+is used. SSH, rsync and activation/rollback use `StrictHostKeyChecking=yes`,
+ED25519 only and the verified known_hosts file; global trust files are disabled.
 
-Missing, empty, `false`, `True`, `TRUE`, whitespace and all other opt-in values
-disable the deploy job. The Python policy is deliberately case-sensitive.
-Push, pull request and manual runs always run CI. Only pushes and manual runs
-on the exact production branch may deploy; PRs never receive deployment secrets.
-Opt-in does not bypass CI, environment protection or branch freshness. Removing
-the variable prevents future jobs; it does not cancel an already-running job.
+The production environment permits exactly `main` as a branch, without wildcard
+or tag policies. Existing reviewers, timers and custom rules are preserved.
+Protect the branch and require `check`. After owner review, a commit/push and
+passing CI, use the separate `-EnableDeployment` command in the guide. This task
+does not configure GitHub, add secrets, enable deployment, commit or push.
+
+Missing, empty, `false`, `True`, `TRUE`, whitespace and every value other than
+exact lowercase `true` disable the deploy job. Rerunning setup always disables
+deployment. Push, PR and manual runs still run CI; only a push or manual run on
+the exact production ref can deploy. Opt-in never bypasses CI, environment
+protection or branch freshness. Disabling does not cancel already-admitted jobs.
 
 ## Checks and immutable artifact
 

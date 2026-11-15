@@ -76,3 +76,7 @@ adapts the template boundary to Workout's existing plans and sessions at
 
 The owner controls Git staging, commits, merges and pushes. Future ideas in
 [the product brief](docs/PRODUCT_BRIEF.md) are outside this integration's scope.
+
+[Windows GitHub deployment onboarding](docs/github-onboarding.md) configures
+repository variables and an exact production-branch environment with deployment
+disabled. Add only `DEPLOY_SSH_KEY` manually, then separately opt in after review.

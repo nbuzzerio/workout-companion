@@ -26,8 +26,10 @@ def main():
         with urllib.request.urlopen(request, timeout=20) as response:
             return json.load(response)['object']['sha']
     def activate():
-        command = ['ssh', '-i', str(Path.home() / '.ssh/deploy_key'), '-p', env.get('DEPLOY_PORT') or '22',
-                   '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'IdentitiesOnly=yes',
+        command = ['ssh', '-i', str(Path.home() / '.ssh/deploy_key'), '-p', env['DEPLOY_PORT'],
+                   '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
+                   '-o', 'HostKeyAlgorithms=ssh-ed25519', '-o', 'GlobalKnownHostsFile=/dev/null',
+                   '-o', f'UserKnownHostsFile={Path.home() / ".ssh/known_hosts"}', '-o', 'IdentitiesOnly=yes',
                    '-o', 'ConnectTimeout=15', f'{env["DEPLOY_USER"]}@{env["DEPLOY_HOST"]}',
                    f'deploy-static activate {env["SLUG"]} {env["RELEASE"]}']
         return json.loads(subprocess.check_output(command, text=True))
