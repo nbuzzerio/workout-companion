@@ -1,0 +1,143 @@
+name: Check and deploy static app
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      slug: ${{ steps.config.outputs.slug }}
+      base: ${{ steps.config.outputs.base }}
+      release: ${{ steps.config.outputs.release }}
+      deploy_allowed: ${{ steps.deployment_policy.outputs.allowed }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.9.0
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm test:infra
+      - name: Evaluate explicit deployment opt-in
+        id: deployment_policy
+        env:
+          ENABLE_DEPLOYMENT: ${{ vars.ENABLE_DEPLOYMENT }}
+          PRODUCTION_BRANCH: ${{ vars.PRODUCTION_BRANCH || 'main' }}
+        run: echo "allowed=$(python3 scripts/deployment_policy.py)" >> "$GITHUB_OUTPUT"
+      - name: Read validated shared config
+        id: config
+        shell: bash
+        run: |
+          echo "slug=$(pnpm --silent app:config id)" >> "$GITHUB_OUTPUT"
+          echo "base=$(pnpm --silent app:config basePath)" >> "$GITHUB_OUTPUT"
+          echo "release=${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+      - run: pnpm build
+        env:
+          RELEASE_ID: ${{ steps.config.outputs.release }}
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
+      - name: Test actual Nginx route against built artifact
+        run: python3 infra/tests/nginx_integration.py
+      - uses: actions/upload-artifact@v6
+        with:
+          name: static-release
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v6
+        if: failure()
+        with:
+          name: test-failure-reports
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
+  deploy:
+    needs: check
+    if: >-
+      needs.check.outputs.deploy_allowed == 'true' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref == format('refs/heads/{0}', vars.PRODUCTION_BRANCH || 'main')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: production
+    concurrency:
+      group: production-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v6
+        with:
+          name: static-release
+          path: dist
+      - name: Upload and activate checked release
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          SLUG: ${{ needs.check.outputs.slug }}
+          RELEASE: ${{ needs.check.outputs.release }}
+          BASE: ${{ needs.check.outputs.base }}
+          PUBLIC_ORIGIN: ${{ vars.PUBLIC_ORIGIN }}
+          PRODUCTION_BRANCH: ${{ vars.PRODUCTION_BRANCH || 'main' }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_HOST:?}" "${DEPLOY_USER:?}" "${DEPLOY_KEY:?}" "${KNOWN_HOSTS:?}" "${PUBLIC_ORIGIN:?}"
+          port="${DEPLOY_PORT:-22}"
+          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]]
+          [[ "$DEPLOY_USER" == personal-deploy ]]
+          [[ "$port" =~ ^[0-9]{1,5}$ ]] && (( port >= 1 && port <= 65535 ))
+          [[ "$SLUG" =~ ^[a-z][a-z0-9]*(-[a-z0-9]+)*$ && ${#SLUG} -le 48 ]]
+          [[ "$RELEASE" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}$ ]]
+          [[ "$BASE" == "/apps/$SLUG/" ]]
+          [[ "$PUBLIC_ORIGIN" =~ ^https://[a-zA-Z0-9][a-zA-Z0-9.:-]*$ ]]
+          install -d -m 700 "$HOME/.ssh"
+          trap 'rm -f "$HOME/.ssh/deploy_key"' EXIT
+          printf '%s\n' "$DEPLOY_KEY" > "$HOME/.ssh/deploy_key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/deploy_key" "$HOME/.ssh/known_hosts"
+          ssh_args=(-i "$HOME/.ssh/deploy_key" -p "$port" -o BatchMode=yes -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -o ConnectTimeout=15)
+          remote="$DEPLOY_USER@$DEPLOY_HOST"
+          # Keep these rsync options in sync with infra/ssh_gateway.py's allowlist.
+          rsync -rt --delete -e "ssh -i $HOME/.ssh/deploy_key -p $port -o BatchMode=yes -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -o ConnectTimeout=15" dist/ "$remote:/srv/personal-apps/incoming/$SLUG/$RELEASE/"
+          # Inside deploy concurrency: query current remote branch HEAD immediately
+          # before activation. API errors/mismatches fail closed, including reruns.
+          activation=$(python3 scripts/activate_checked.py)
+          printf 'Activation result: %s\n' "$activation" >> "$GITHUB_STEP_SUMMARY"
+          previous=$(printf '%s' "$activation" | python3 -c 'import sys,json; print(json.load(sys.stdin)["previous"] or "")')
+          # Exact release identity through Nginx (not just a generic HTTP 200).
+          if ! curl --fail --silent --show-error --retry 3 --max-time 20 -H 'Cache-Control: no-cache' "$PUBLIC_ORIGIN${BASE}release.json?release=$RELEASE" > /tmp/served-release.json ||
+             ! python3 -c 'import json,sys; m=json.load(open("/tmp/served-release.json")); assert m["appId"] == sys.argv[1] and m["release"] == sys.argv[2]' "$SLUG" "$RELEASE"; then
+            echo '::error::Public release health check failed.'
+            if [[ -n "$previous" ]]; then
+              result=$(ssh "${ssh_args[@]}" "$remote" "deploy-static rollback-if-current $SLUG $previous $RELEASE")
+              printf 'Conditional rollback result: %s\n' "$result" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo 'First deployment: no previous release exists. Inspect Nginx/TLS; release remains active.' >> "$GITHUB_STEP_SUMMARY"
+            fi
+            exit 1
+          fi
+          echo "Deployed $SLUG release $RELEASE to $PUBLIC_ORIGIN$BASE (previous: ${previous:-none})." >> "$GITHUB_STEP_SUMMARY"
+      - name: Report deployment failure
+        if: failure()
+        run: |
+          echo '::error::Deployment failed. Check the upload, activation, and public health-check logs. Previous releases are retained.'
+          echo 'Deployment failed. See docs/troubleshooting.md for status and rollback commands.' >> "$GITHUB_STEP_SUMMARY"

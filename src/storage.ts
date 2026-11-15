@@ -1,7 +1,8 @@
 import { validateSession, type Plan, type Session } from './workouts'
+import { appConfig } from '../config/app'
 
 // Initial additive schema. Never clear stores; reject unknown record versions.
-export async function openDatabase(name = 'workout-companion'): Promise<IDBDatabase> {
+export async function openDatabase(name = appConfig.databaseName): Promise<IDBDatabase> {
   if (!globalThis.indexedDB) throw new Error('Local storage unavailable. Enable browser storage and retry.')
   return new Promise((resolve, reject) => {
     let blocked = false

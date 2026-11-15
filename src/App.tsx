@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { SessionStore } from './storage'
 import { createSession, demoPlan, formatSet, updateSet, validateSession, type Session, type Performance } from './workouts'
 import './App.css'
+import { PwaStatus } from './PwaStatus'
 
 const defaultStore = new SessionStore()
 const draftKey = 'workout-companion-draft-v1'
@@ -90,6 +91,7 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
 
   return <main className="runner">
     <header><p className="eyebrow">WORKOUT COMPANION / LOCAL TRAINING LOG</p><h1>One set at a time.</h1><p>Your plan, your last lift, your next set.</p></header>
+    <PwaStatus canReload={!dirty && !busy && !loading && !recovery.error} />
     <aside className="demo"><strong>DEMO workspace</strong><span>Sample plan only. These practice sessions are not imported workout history. Monday is the only available plan; you can practice it on any date.</span></aside>
     <nav className="week" aria-label="Weekly day selector">{days.map(d => <button key={d} aria-pressed={day === d} onClick={() => setDay(d)}>{d}<small>{d === 'Mon' ? 'Strength' : 'No plan'}</small></button>)}</nav>
     <div className="workspace">

@@ -1,8 +1,9 @@
 import { expect, test, vi } from 'vitest'
+import 'fake-indexeddb/auto'
 import { openDatabase, SessionStore } from './storage'
 import { createSession, demoPlan, updateSet } from './workouts'
-// Native IndexedDB integration contract. jsdom has no IndexedDB; do not fake a pass.
-test.skipIf(!globalThis.indexedDB)('native IndexedDB fresh/repeat open, restart persistence, conflicts and history retention', async () => {
+// Deterministic transaction tests; real browser IndexedDB is covered in e2e.
+test('IndexedDB fresh/repeat open, restart persistence, conflicts and history retention', async () => {
   const name = `w01-test-${crypto.randomUUID()}`
   const open = () => openDatabase(name)
   const first = new SessionStore(open)
@@ -38,4 +39,51 @@ test.skipIf(!globalThis.indexedDB)('native IndexedDB fresh/repeat open, restart 
   expect(await new SessionStore(open).reopen(recovered.id)).toEqual(recovered)
   expect(await restarted.reopen(b.id)).toEqual(b)
   await new Promise<void>((resolve, reject) => { const r = indexedDB.deleteDatabase(name); r.onsuccess = () => resolve(); r.onerror = () => reject(r.error) })
+})
+
+test('pre-integration v1 stores and complete records reopen without a migration or rewrite', async () => {
+  const name = `w01-compat-${crypto.randomUUID()}`
+  const plan = structuredClone(demoPlan)
+  plan.exercises[0].musclesSource = 'raw legacy metadata'
+  const session = createSession(plan, '2026-11-09')
+  session.demo = false
+  session.status = 'completed'
+  session.revision = 7
+  session.exercises.push({ id: 'plank', name: 'Plank', sets: [{ kind: 'hold', seconds: 42.5 }] })
+  // Construct the old schema directly, without using the integrated opener.
+  const legacy = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(name, 1)
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore('plans', { keyPath: 'id' })
+      request.result.createObjectStore('sessions', { keyPath: 'id' })
+    }
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+  })
+  await new Promise<void>((resolve, reject) => {
+    const tx = legacy.transaction(['plans', 'sessions'], 'readwrite')
+    tx.objectStore('plans').put(plan)
+    tx.objectStore('sessions').put(session)
+    tx.oncomplete = () => resolve()
+    tx.onabort = () => reject(tx.error)
+  })
+  legacy.close()
+  const store = new SessionStore(() => openDatabase(name))
+  await store.ensurePlan(demoPlan)
+  expect(await store.reopen(session.id)).toEqual(session)
+  const db = await openDatabase(name)
+  expect(db.version).toBe(1)
+  expect(Array.from(db.objectStoreNames)).toEqual(['plans', 'sessions'])
+  const retained = await new Promise((resolve, reject) => {
+    const request = db.transaction('plans').objectStore('plans').get(plan.id)
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+  })
+  expect(retained).toEqual(plan)
+  db.close()
+  await new Promise<void>((resolve, reject) => {
+    const request = indexedDB.deleteDatabase(name)
+    request.onsuccess = () => resolve()
+    request.onerror = () => reject(request.error)
+  })
 })
