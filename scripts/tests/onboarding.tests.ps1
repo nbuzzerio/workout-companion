@@ -107,7 +107,7 @@ function New-Fixture {
         if ($path -eq "$root/branches/main" -and $method -eq 'GET') { $ok.Data = [pscustomobject]@{name = 'main'}; return $ok }
         if ($path -eq "$root/contents/config/app.ts?ref=main") { $ok.Data = [pscustomobject]@{encoding = 'base64'; content = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($state.RemoteSource))}; return $ok }
         if ($path -eq "$root/contents/.github/workflows/ci-deploy.yml?ref=main") { $ok.Data = [pscustomobject]@{encoding = 'base64'; content = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($state.RemoteWorkflow))}; return $ok }
-        if ($path -match '/contents/(scripts/(verify_host_key|deployment_policy|activate_checked)\.py)\?ref=main$') {
+        if ($path -match '/contents/((scripts/(verify_host_key|deployment_policy|activate_checked|release_health)|infra/(deploy_static|storage_guard))\.mjs)\?ref=main$') {
             $text = [IO.File]::ReadAllText((Join-Path $state.ReviewedRoot $Matches[1]))
             $ok.Data = [pscustomobject]@{encoding = 'base64'; content = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($text))}; return $ok
         }

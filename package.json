@@ -10,13 +10,14 @@
   },
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "tsc -b && vite build && node scripts/release.ts && python scripts/validate_artifact.py",
+    "build": "tsc -b && vite build && node scripts/release.ts && pnpm validate:artifact",
     "typecheck": "tsc -b",
     "lint": "eslint .",
     "test": "vitest run",
-    "test:infra": "python -m unittest discover -s infra/tests -v",
+    "test:infra": "node --test infra/tests/*.test.mjs",
     "test:e2e": "playwright test",
-    "test:nginx": "python infra/tests/nginx_integration.py",
+    "test:nginx": "node infra/tests/nginx_integration.mjs",
+    "validate:artifact": "node scripts/validate_artifact.mjs",
     "app:config": "node scripts/config.ts",
     "verify": "pnpm typecheck && pnpm lint && pnpm test && pnpm test:infra && pnpm build && pnpm test:e2e",
     "preview": "vite preview --host 127.0.0.1"

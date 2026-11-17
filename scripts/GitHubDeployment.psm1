@@ -229,7 +229,7 @@ function Invoke-DeploymentOnboarding {
         # Compare security-critical remote source to the locally reviewed copy.
         # Merely finding a marker string in an old workflow is insufficient.
         $reviewedRoot = Split-Path $PSScriptRoot -Parent
-        foreach ($file in @('.github/workflows/ci-deploy.yml', 'scripts/verify_host_key.py', 'scripts/deployment_policy.py', 'scripts/activate_checked.py')) {
+        foreach ($file in @('.github/workflows/ci-deploy.yml', 'scripts/verify_host_key.mjs', 'scripts/deployment_policy.mjs', 'scripts/activate_checked.mjs', 'scripts/release_health.mjs', 'infra/deploy_static.mjs', 'infra/storage_guard.mjs')) {
             $remote = & $Api 'GET' "$root/contents/${file}?ref=$encodedBranch" $null $false
             if ($remote.Data.encoding -cne 'base64') { throw "Unexpected remote source encoding: $file." }
             $remoteText = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($remote.Data.content)).Replace("`r`n", "`n")

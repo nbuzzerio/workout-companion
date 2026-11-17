@@ -46,7 +46,7 @@ jobs:
         env:
           ENABLE_DEPLOYMENT: ${{ vars.ENABLE_DEPLOYMENT }}
           PRODUCTION_BRANCH: ${{ vars.PRODUCTION_BRANCH || 'main' }}
-        run: echo "allowed=$(python3 scripts/deployment_policy.py)" >> "$GITHUB_OUTPUT"
+        run: echo "allowed=$(node scripts/deployment_policy.mjs)" >> "$GITHUB_OUTPUT"
       - name: Read validated shared config
         id: config
         shell: bash
@@ -60,7 +60,7 @@ jobs:
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test:e2e
       - name: Test actual Nginx route against built artifact
-        run: python3 infra/tests/nginx_integration.py
+        run: pnpm test:nginx
       - uses: actions/upload-artifact@v6
         with:
           name: static-release
@@ -95,6 +95,10 @@ jobs:
         with:
           name: static-release
           path: dist
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
       - name: Upload and activate checked release
         shell: bash
         env:
@@ -124,20 +128,20 @@ jobs:
           trap 'rm -f "$HOME/.ssh/deploy_key"' EXIT
           umask 077
           printf '%s\n' "$DEPLOY_KEY" > "$HOME/.ssh/deploy_key"
-          python3 scripts/verify_host_key.py
+          node scripts/verify_host_key.mjs
           chmod 600 "$HOME/.ssh/deploy_key" "$HOME/.ssh/known_hosts"
           ssh_args=(-i "$HOME/.ssh/deploy_key" -p "$port" -o BatchMode=yes -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o GlobalKnownHostsFile=/dev/null -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o IdentitiesOnly=yes -o ConnectTimeout=15)
           remote="$DEPLOY_USER@$DEPLOY_HOST"
-          # Keep these rsync options in sync with infra/ssh_gateway.py's allowlist.
+          # Keep these rsync options in sync with infra/ssh_gateway.mjs's allowlist.
           rsync -rt --delete -e "ssh -i $HOME/.ssh/deploy_key -p $port -o BatchMode=yes -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o GlobalKnownHostsFile=/dev/null -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o IdentitiesOnly=yes -o ConnectTimeout=15" dist/ "$remote:/srv/personal-apps/incoming/$SLUG/$RELEASE/"
           # Inside deploy concurrency: query current remote branch HEAD immediately
           # before activation. API errors/mismatches fail closed, including reruns.
-          activation=$(python3 scripts/activate_checked.py)
+          activation=$(node scripts/activate_checked.mjs)
           printf 'Activation result: %s\n' "$activation" >> "$GITHUB_STEP_SUMMARY"
-          previous=$(printf '%s' "$activation" | python3 -c 'import sys,json; print(json.load(sys.stdin)["previous"] or "")')
+          previous=$(printf '%s' "$activation" | node scripts/release_health.mjs previous)
           # Exact release identity through Nginx (not just a generic HTTP 200).
           if ! curl --fail --silent --show-error --retry 3 --max-time 20 -H 'Cache-Control: no-cache' "$PUBLIC_ORIGIN${BASE}release.json?release=$RELEASE" > /tmp/served-release.json ||
-             ! python3 -c 'import json,sys; m=json.load(open("/tmp/served-release.json")); assert m["appId"] == sys.argv[1] and m["release"] == sys.argv[2]' "$SLUG" "$RELEASE"; then
+             ! node scripts/release_health.mjs check /tmp/served-release.json "$SLUG" "$RELEASE"; then
             echo '::error::Public release health check failed.'
             if [[ -n "$previous" ]]; then
               result=$(ssh "${ssh_args[@]}" "$remote" "deploy-static rollback-if-current $SLUG $previous $RELEASE")

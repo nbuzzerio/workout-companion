@@ -50,7 +50,7 @@ artifact and never rebuilds it. Node 24.18.0 and pnpm 11.9.0 are pinned.
 
 `release.json` contains format version 1, app ID, base path, release ID and
 SHA-256 hashes for every other file. CI release IDs combine commit SHA, run ID
-and attempt; local builds use `local`. The unchanged server validator checks
+and attempt; local builds use `local`. The shared Node validator checks
 identity, exact inventory, hashes, HTML asset prefixes and PWA scope. It rejects
 dotfiles, special files, symlinks, more than 10,000 files or releases over 100 MiB.
 This authenticates integrity over trusted SSH; it is not code signing.
@@ -73,7 +73,7 @@ The existing reserve remains 3 GiB plus conservative operation headroom and
 free-inode admission checks. It is admission control, not a hard upload quota.
 Retention remains five releases, protecting the active and actual previous
 releases. Existing release IDs cannot be overwritten. These policies and the
-restricted SSH parser are copied unchanged from the local template.
+restricted SSH parser preserve the template protocol in the Node implementation.
 
 The HTTPS health check must return the exact app ID and release ID from public
 `release.json`. On failure, CI attempts `rollback-if-current` to the previous
@@ -84,3 +84,11 @@ leave activation uncertain; inspect status before taking further action.
 
 See [status and rollback](troubleshooting.md). The `infra/` copies are testable
 protocol references, not instructions to reinstall or change the live host.
+
+The repository helpers now use Node rather than Python. The workflow continues
+to speak the same `deploy-static`/rsync protocol to an existing host; it does not
+install helpers there. A host still using the old Python reference needs a
+separately approved helper/runtime migration before the **host itself** is
+Python-free. The Node reference requires Node 24.18.0, rsync and util-linux
+`flock`, with the same root-owned helper installation and forced-command policy.
+No application Node server is introduced. See [migration notes](NODE_ONLY_MIGRATION.md).

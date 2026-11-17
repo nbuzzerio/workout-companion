@@ -11,8 +11,8 @@ Other weekdays currently show no plan. Imports and cloud backup are not implemen
 
 ## Local development
 
-Use Node **24.18.0**, pnpm **11.9.0**, and Python **3.8+** (release validation and
-infrastructure tests). Only pnpm is used for dependencies and scripts.
+Use Node **24.18.0** and pnpm **11.9.0**. Only pnpm is used for dependencies
+and scripts; no Python installation is required.
 
 ```sh
 pnpm install --frozen-lockfile
@@ -31,13 +31,20 @@ pnpm preview --host 127.0.0.1
 
 Open `http://127.0.0.1:4173/apps/workout/` to test the built PWA. `pnpm verify`
 runs typechecking, lint, unit/component/storage tests, infrastructure tests,
-production build, SHA-256 artifact validation and Chromium workflows. Python
-POSIX tests skip on Windows; run `pnpm test:infra` under Linux to cover them.
-`pnpm test:nginx` additionally needs Linux and Docker; it exercises the actual
-Nginx include with the built artifact. CI runs both on GitHub-hosted Ubuntu.
+production build, SHA-256 artifact validation and Chromium workflows. Linux
+release-operation tests skip on Windows; run `pnpm test:infra` under Linux with
+rsync and util-linux `flock` to cover them. These are deployment tools, not app servers.
+`pnpm test:nginx` additionally needs Linux and Docker, or use
+`pnpm test:nginx --nginx /path/to/nginx` with an isolated local Nginx binary.
+It exercises the actual Nginx include with the built artifact. CI runs both
+on GitHub-hosted Ubuntu. Optional GitHub onboarding uses Windows PowerShell;
+its offline suite runs inside `test:infra` on Windows.
 
 Other commands: `pnpm app:config`, `pnpm test`, `pnpm test:e2e`, `pnpm build`.
-Build first when running `test:e2e` separately. The output is exclusively `dist/`.
+Build first when running `test:e2e` separately. `pnpm validate:artifact` rechecks
+an existing build. The output is exclusively `dist/`.
+See [Node-only migration and verification](docs/NODE_ONLY_MIGRATION.md) for the
+coverage comparison, environment proof and Studio follow-up.
 
 ## Offline and local data
 

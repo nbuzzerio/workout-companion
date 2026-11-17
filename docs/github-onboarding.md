@@ -181,11 +181,11 @@ GitHub environment values can override repository variables. Unknown/malformed
 responses, inaccessible repositories, redirects, permission errors, readback
 mismatches and API/network failures abort. No alternate insecure mode is used.
 
-Only exact lowercase `true` enables deployment. The independent Python policy
+Only exact lowercase `true` enables deployment. The independent Node policy
 still requires a push/manual event and the exact production ref; tags, PRs,
 different branches and inexact opt-in strings never deploy.
 
-At deployment time, `verify_host_key.py` discovers only ED25519 public keys with
+At deployment time, `verify_host_key.mjs` discovers only ED25519 public keys with
 bounded `ssh-keyscan`, validates the SSH wire encoding, requires exactly one
 distinct key, and compares its SHA256 fingerprint with the pin before writing
 `known_hosts`. Identical duplicate entries are harmless; distinct keys, incorrect
@@ -201,7 +201,7 @@ pnpm test:infra
 ```
 
 The PowerShell suite runs against an in-memory fake GitHub API with no additional
-modules. Python tests use synthetic public host keys; no server or SSH private
+modules. Node tests use synthetic public host keys; no server or SSH private
 key is used. Existing app, IndexedDB, build and browser checks remain required.
 CI runs the PowerShell suite on Windows and requires it before the Ubuntu
 `check` job; Linux infrastructure tests run the host-key and existing POSIX
