@@ -6,7 +6,8 @@ export interface Settings {
   id: 'settings'; deviceId: string; enabled: boolean; phase: 'local' | 'initial' | 'recovery' | 'ready'
   spaceId?: string; principalId?: string; cursor: string | null; commonCursor: string | null
   stageCursor?: string | null; stageComplete?: boolean; failures: number; nextRetry: number
-  lastSuccess?: string; error?: string; exportId?: string; consentAt?: string
+  lastSuccess?: string; lastConfirmed?: string; catchUpPending?: boolean; signInRequired?: boolean
+  error?: string; exportId?: string; consentAt?: string
   controlVersion?: number
   spaceCreation?: { id: string; name: string }; personCreation?: { id: string; name: string }
 }
@@ -63,8 +64,9 @@ export class SyncStore {
   read<T>(run: (tx: IDBTransaction) => Promise<T>) { return transaction(this.open, allStores, 'readonly', run) }
   write<T>(run: (tx: IDBTransaction) => Promise<T>) { return transaction(this.open, allStores, 'readwrite', run) }
   settings() { return this.read(getSettings) }
-  async patch(patch: Partial<Settings>) { return this.write(async tx => {
+  async patch(patch: Partial<Settings>, expectedControlVersion?: number) { return this.write(async tx => {
     const s = await getSettings(tx)
+    if (expectedControlVersion !== undefined && (!s.enabled || (s.controlVersion ?? 0) !== expectedControlVersion)) return
     const control = patch.enabled === undefined ? {} : { controlVersion: (s.controlVersion ?? 0) + 1 }
     if (patch.enabled !== undefined) markSyncControl(tx, patch.enabled)
     await request(tx.objectStore('syncSettings').put({ ...s, ...patch, ...control, id: 'settings', deviceId: s.deviceId }))
@@ -74,6 +76,13 @@ export class SyncStore {
   }
   async finishPersonCreation(id: string) {
     return this.write(async tx => { const s = await getSettings(tx); if (s.personCreation?.id === id) { delete s.personCreation; await request(tx.objectStore('syncSettings').put(s)) } })
+  }
+  summary() {
+    return transaction(this.open, ['syncSettings', 'syncOutbox', 'syncConflicts'], 'readonly', async tx => ({
+      settings: await getSettings(tx),
+      pending: await request(tx.objectStore('syncOutbox').count()),
+      conflicts: await request(tx.objectStore('syncConflicts').count()),
+    }))
   }
   async view() { return this.read(async tx => ({ settings: await getSettings(tx), pending: await all<Pending>(tx, 'syncOutbox'), conflicts: await all<Conflict>(tx, 'syncConflicts'), people: await all<Person>(tx, 'syncPeople'), spaces: await all<Space>(tx, 'syncSpaces'), plans: await all<Value>(tx, 'plans'), sessions: await all<Value>(tx, 'sessions'), metadata: await all<Meta>(tx, 'syncMeta'), staged: (await all<{ snapshot: Snapshot }>(tx, 'syncRemote')).map(x => x.snapshot) })) }
   async export(draft?: string | null) { return this.write(async tx => { const b = await backup(tx, 'User export', draft); const s = await getSettings(tx); s.exportId = b.id; await request(tx.objectStore('syncSettings').put(s)); return b }) }
@@ -107,7 +116,7 @@ export class SyncStore {
       return ops
     })
   }
-  async apply(response: ExchangeResponse, sent: Operation[], scope: string, controlVersion?: number) {
+  async apply(response: ExchangeResponse, sent: Operation[], scope: string, controlVersion?: number, commonPending = false) {
     return this.write(async tx => {
       const s = await getSettings(tx)
       if (controlVersion !== undefined && (!s.enabled || (s.controlVersion ?? 0) !== controlVersion)) return
@@ -143,7 +152,13 @@ export class SyncStore {
         }
         await request(tx.objectStore('syncMeta').put({ id: key, version: change.serverVersion, people: pending || existing ? meta?.people ?? [] : change.people, deleted: change.deleted, server: change } satisfies Meta))
       }
-      s.cursor = response.cursor; s.failures = 0; s.nextRetry = 0; s.error = undefined; s.lastSuccess = new Date().toISOString()
+      s.cursor = response.cursor; s.failures = 0; s.nextRetry = 0; s.error = undefined; s.signInRequired = false
+      // Older installations recorded each committed exchange page in lastSuccess.
+      s.lastSuccess = new Date().toISOString()
+      s.catchUpPending = commonPending || response.hasMore || sent.length > 0
+      if (!s.catchUpPending && !await request(tx.objectStore('syncOutbox').count()) && !await request(tx.objectStore('syncConflicts').count())) {
+        s.lastConfirmed = s.lastSuccess
+      }
       await request(tx.objectStore('syncSettings').put(s))
     })
   }
@@ -156,7 +171,7 @@ export class SyncStore {
       if (controlVersion !== undefined && (!s.enabled || (s.controlVersion ?? 0) !== controlVersion)) return
       if (!['initial', 'recovery'].includes(s.phase)) throw new Error('No reconciliation in progress')
       for (const change of response.changes) await request(tx.objectStore('syncRemote').put({ id: keyOf(change.kind, change.recordId), snapshot: change }))
-      s.stageCursor = response.cursor; s.stageComplete = !response.hasMore; s.error = undefined; s.nextRetry = 0; s.failures = 0
+      s.stageCursor = response.cursor; s.stageComplete = !response.hasMore; s.error = undefined; s.nextRetry = 0; s.failures = 0; s.signInRequired = false
       await request(tx.objectStore('syncSettings').put(s))
     })
   }
@@ -182,7 +197,7 @@ export class SyncStore {
         else if (!row && !queue.length && server && !server.deleted) await install(tx, server)
         await request(tx.objectStore('syncMeta').put({ id: key, version: server?.serverVersion ?? null, people: row ? old?.people ?? [] : server?.people ?? [], deleted: server?.deleted ?? false, ...(server ? { server } : {}) } satisfies Meta))
       }
-      s.phase = 'ready'; s.cursor = s.stageCursor ?? null; s.stageComplete = false; s.error = undefined
+      s.phase = 'ready'; s.cursor = s.stageCursor ?? null; s.stageComplete = false; s.error = undefined; s.catchUpPending = true
       await request(tx.objectStore('syncSettings').put(s)); await request(tx.objectStore('syncRemote').clear())
     })
   }
@@ -196,6 +211,9 @@ export class SyncStore {
       const local = await request(tx.objectStore(storeFor(c.kind)).get(c.recordId)) as Value | undefined
       const m: Meta = { id, version: c.current?.serverVersion ?? null, people: choice === 'local' ? c.people : c.current?.people ?? [], deleted: c.current?.deleted ?? false, ...(c.current ? { server: c.current } : {}) }
       await request(tx.objectStore('syncMeta').put(m)); await request(tx.objectStore('syncConflicts').delete(id))
+      s.catchUpPending = true
+      await request(tx.objectStore('syncSettings').put(s))
+      markLocalChange(tx)
       if (choice === 'local') {
         if (local) await enqueue(tx, c.kind, local, c.recordId, c.people, c.current?.deleted ?? false)
         else if (c.current && !c.current.deleted) await enqueue(tx, c.kind, null, c.recordId)

@@ -21,7 +21,7 @@ pnpm dev
 
 Open `http://127.0.0.1:5173/apps/workout/`. The development server does not enable
 service workers. `config/app.ts` validates the app ID, production base path,
-existing database identity and disabled future sync configuration.
+existing database identity and local-first defaults.
 
 ```sh
 pnpm exec playwright install chromium
@@ -48,17 +48,15 @@ coverage comparison, environment proof and Studio follow-up.
 
 ## Offline and local data
 
-IndexedDB remains **workout-companion**, version **1**, with `plans` and `sessions`
-stores. The recovery key remains `workout-companion-draft-v1`. No migration,
-record conversion, store deletion or data reset is introduced. Saved sessions
-remain authoritative; recovery drafts are separate from saved history.
+IndexedDB **workout-companion**, version **2**, holds confirmed plans, sessions
+and the durable sync outbox. Draft recovery uses `workout-companion-draft-v1`.
+Only confirmed saves enter synchronization.
 
 Storage belongs to the browser profile and origin, so localhost, another browser,
 and the production HTTPS origin do not share records. Moving to the production
 URL cannot automatically transfer data from another origin. Clearing browser
-storage, private browsing, eviction or device loss can remove local data; there
-is currently no export/import or cloud backup feature. Keep the original browser
-profile/origin if it contains workouts that have not been transferred safely.
+storage, private browsing, eviction or device loss can remove local data. Download
+a local backup from **Advanced sync settings** to keep a copy outside the browser.
 
 After one successful online installation the service worker caches the app shell
 under `/apps/workout/`. Offline deep links load the same existing runner; this
@@ -77,9 +75,17 @@ See [deployment setup and release protocol](docs/deployment.md),
 [integration decisions and verification](docs/deployment-integration.md).
 The server infrastructure is already provisioned; do not rerun bootstrap.
 
-Sync stays disabled. [The future exchange contract](docs/sync-contract.md)
-adapts the template boundary to Workout's existing plans and sessions at
-`/api/v1/apps/workout/exchange`; no client transport or backend is implemented.
+## Synchronization
+
+Use **Set up sync** in the header to sign in, choose a personal Space, check a
+backup and review the first download. Once connected, confirmed saves, opening
+the app, returning to it and reconnecting trigger automatic two-way sync.
+The header **Sync** button runs a pass immediately. **Review conflicts** leads
+to the saved copies that need a decision. Setup, account controls, People,
+downloads and diagnostics are in **Advanced sync settings**.
+
+See the [interaction pattern for personal apps](docs/SYNC_DEVELOPMENT.md#shared-interaction-pattern)
+and the [implemented exchange contract](docs/sync-contract.md).
 
 The owner controls Git staging, commits, merges and pushes. Future ideas in
 [the product brief](docs/PRODUCT_BRIEF.md) are outside this integration's scope.

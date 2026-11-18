@@ -33,10 +33,49 @@ Do not open `localhost:5174` with this fixture: the Origin must match exactly. T
 
 Production uses relative `/api/v1` URLs from the HTTPS page, with the existing `/apps/workout/` base, static build and service worker. The development/test service is not included in `dist/`.
 
+## Shared interaction pattern
+
+Family Calendar and Cookbook can use the same interaction with their own records,
+consent rules and conflict comparisons. Keep one runner per app tab, mounted
+whether advanced settings are open or closed.
+
+| Header state | Meaning and action |
+| --- | --- |
+| Synced | The last completed pass caught up with the server and there are no queued edits or conflicts. Show its local date and time. |
+| Syncing | A bounded pass is in progress. Coalesce repeated taps. |
+| Changes pending | A confirmed edit is queued or catch-up still needs confirmation. The user can keep working or select **Sync**. |
+| Offline | Edits stay on this device. Keep the last confirmed time visible and retry when the network returns. |
+| Sign in required | Offer setup for a new browser or sign-in for an expired session. Keep the device binding and pending edits through expiry. |
+| Attention needed | Link directly to the relevant setup, conflict, recovery or error details. Leave both versions available until an explicit decision. |
+
+A confirmed save commits its outbox entry in the same local transaction. On
+commit, opening the app, foreground visibility or reconnecting, wake the same
+runner with a short debounce (1.5 seconds in Workout). Visible tabs also check
+about once a minute. Serialize network passes across tabs under a Web Lock.
+Consult the shared last confirmation before an idle poll. Cursor, directory and
+acknowledgement writes refresh the UI without scheduling another pass.
+
+**Sync** requests an immediate bounded upload and download through that runner.
+It works with an empty outbox, waits up to 20 seconds for an occupied lock, and leaves conflicted
+records blocked while unrelated records transfer. For each pass, Workout reads
+up to eight directory pages and twelve workout exchanges. Retain the durable
+cursor at a page limit. Advance the displayed success time only after a final
+exchange with no outgoing writes, both streams caught up and no pending edits
+or unresolved conflicts. Draft edits and local-save messages have their own
+meaning and never advance that time.
+
+Keep backup, consent, Space selection and first reconciliation in setup. An
+already-connected browser restores its session on opening. Reauthentication
+resumes the existing connection. An explicit pause or logout retains the
+existing fresh-backup and consent requirement for reconnecting. Keep exports,
+People associations, recovery, detailed comparisons and diagnostics behind the
+collapsed advanced settings control. Test the pattern with independent local
+devices, interrupted requests and a held clock before adopting it in another app.
+
 ## Exercise the owner workflow
 
 1. Save a synthetic workout locally; confirm no workout exchange occurs before consent.
-2. Open Settings / Synchronization and sign in. Create or select a personal Space; shared Spaces are not offered.
+2. Open **Set up sync** and sign in. Create or select a personal Space.
 3. Download the local JSON backup, inspect its plans/sessions, then check the consent box. The download contains a separately labelled raw recovery draft if one exists; that draft never enters the sync outbox.
 4. Connect, review the downloaded counts, then reconcile. Review any same-ID collisions, including independently created sample plans.
 5. Repeat in another independent browser context. Select the same existing personal Space.

@@ -59,7 +59,25 @@ fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
   .set label { font-size: .7rem; }
   .set input { padding: 10px 8px; }
 }
-.sync-panel { margin: 16px 0; border: 1px solid #c5d2c8; border-radius: 12px; background: #f4f7f1; }
+.app-header { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0 24px; }
+.sync-header { display: grid; justify-items: end; gap: 3px; color: #52625a; font-size: .8rem; }
+.sync-controls { display: flex; align-items: center; gap: 14px; }
+.sync-controls button { min-width: 64px; }
+.sync-state { color: #34463c; font-weight: 650; }
+.sync-state::before { content: ''; display: inline-block; width: .5em; height: .5em; margin-right: .5em; background: #7c897f; border-radius: 50%; vertical-align: .1em; }
+.sync-state[data-state="Synced"]::before { background: #36744e; }
+.sync-state[data-state="Changes pending"]::before, .sync-state[data-state="Attention needed"]::before { background: #956016; }
+.sync-header a { color: #254d3b; padding: 5px 0; }
+.sync-panel { grid-column: 1 / -1; border-bottom: 1px solid #c5d2c8; font-size: .85rem; }
+.sync-panel > summary { padding: 12px 0; color: #43584a; }
+.sync-panel[open] { background: #f4f7f1; border-radius: 8px; }
+.sync-panel[open] > summary { padding-left: 16px; }
+.sync-diagnostics dd { margin: 0 0 8px; overflow-wrap: anywhere; }
+@media (max-width: 650px) {
+  .app-header { grid-template-columns: minmax(0, 1fr); }
+  .sync-header { justify-items: start; }
+  .sync-controls { width: 100%; justify-content: space-between; }
+}
 .sync-panel summary { padding: 14px; cursor: pointer; font-weight: 650; }
 .sync-content { padding: 0 16px 16px; font-size: .85rem; }
 .sync-content section, .sync-content form { margin-top: 18px; border-top: 1px solid #ced9d0; padding-top: 14px; }
@@ -70,7 +88,9 @@ fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
 .sync-content .check input { width: 24px; flex-shrink: 0; }
 .sync-conflict { overflow-wrap: anywhere; }
 .sync-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-.sync-comparison pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 380px; overflow: auto; font-size: .75rem; }
+.sync-comparison h4 { margin-bottom: 6px; }
+.sync-comparison ul { padding-left: 18px; }
+.sync-comparison-details pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 380px; overflow: auto; font-size: .75rem; }
 .sync-error { color: #862d25; padding: 12px; background: #fff0eb; }
 @media (max-width: 600px) { .sync-comparison { grid-template-columns: minmax(0, 1fr); } }
 .plan-picker { margin-top: 16px; }

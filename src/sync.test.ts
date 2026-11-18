@@ -63,6 +63,26 @@ test('page application rolls back ACK and cursor together on storage failure', a
   expect(await d.sync.view()).toEqual(before)
 })
 
+test('only a fully caught-up exchange confirms the sync time, including after an upgrade', async () => {
+  const d = device()
+  await ready(d)
+  const previous = '2026-01-01T00:00:00Z'
+  await d.sync.patch({ lastSuccess: previous, catchUpPending: undefined })
+  await d.local.ensurePlan(demoPlan)
+  const sent = await d.sync.batch()
+  await d.sync.apply(page([], sent), sent, space.id)
+  expect((await d.sync.settings()).lastConfirmed).toBeUndefined()
+  expect((await d.sync.settings()).catchUpPending).toBe(true)
+  await d.sync.apply({ ...page([]), hasMore: true }, [], space.id)
+  expect((await d.sync.settings()).lastConfirmed).toBeUndefined()
+  expect((await d.sync.settings()).catchUpPending).toBe(true)
+  await d.sync.apply(page([]), [], space.id, undefined, true)
+  expect((await d.sync.settings()).lastConfirmed).toBeUndefined()
+  expect((await d.sync.settings()).catchUpPending).toBe(true)
+  await d.sync.apply(page([]), [], space.id)
+  expect(await d.sync.settings()).toMatchObject({ lastConfirmed: expect.any(String), catchUpPending: false })
+})
+
 test('initial empty server retains existing data and requires export matching latest saves', async () => {
   const d = device(); const exported = await d.sync.export(); const saved = await d.local.complete(createSession(demoPlan, '2026-11-09'))
   await expect(d.sync.begin(space, principal, exported.id)).rejects.toThrow('fresh export')

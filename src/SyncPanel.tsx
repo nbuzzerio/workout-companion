@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { SyncEngine } from './sync-engine'
+import { ApiError } from './sync-api'
 import { SyncStore, type Backup, type Conflict } from './sync-store'
-import { same, type Association, type Kind } from './sync'
+import { planSchema, same, sessionSchema, type Association, type Kind, type Person, type Value } from './sync'
+import { formatSet } from './workouts'
 
 function download(value: unknown, name: string) {
   const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' }))
@@ -15,46 +17,113 @@ function conflictTitle(c: Conflict) {
   const value = c.local ?? c.current?.value
   return value && 'date' in value ? `Workout on ${value.date}` : value && 'name' in value ? value.name : `${c.kind} ${c.recordId}`
 }
+function ConflictCopy({ title, value, labels, people }: { title: string; value: Value | null; labels: Association[]; people: Person[] }) {
+  if (value && !('date' in value ? sessionSchema : planSchema).safeParse(value).success) {
+    return <div><h4>{title}</h4><p>Open the detailed comparison to inspect this record.</p></div>
+  }
+  return <div><h4>{title}</h4>
+    {value ? <>
+      <p>{'date' in value ? `${value.date} · ${value.status}` : value.name}</p>
+      <ul>{value.exercises.map((exercise, index) => <li key={index}>{exercise.name} · {exercise.sets.map(formatSet).join(' | ')}</li>)}</ul>
+      {labels.map(label => <p key={label.personId + label.role}>{people.find(p => p.id === label.personId)?.displayName ?? 'Unknown person'} · {label.role}</p>)}
+    </> : <p>No saved record in this copy.</p>}
+  </div>
+}
 export function SyncPanel({ store }: { store: SyncStore }) {
   const engine = useMemo(() => new SyncEngine(store), [store])
-  const [view, setView] = useState<Awaited<ReturnType<SyncStore['view']>>>()
+  const [summary, setSummary] = useState<Awaited<ReturnType<SyncStore['summary']>> & { details?: Awaited<ReturnType<SyncStore['view']>> }>()
+  const view = summary?.details
   const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [signedIn, setSignedIn] = useState(false)
+  const [syncing, setSyncing] = useState(false)
+  const [online, setOnline] = useState(navigator.onLine)
+  const [runnerError, setRunnerError] = useState('')
+  const advanced = useRef<HTMLDetailsElement>(null)
   const [spaceId, setSpaceId] = useState(''); const [exportId, setExportId] = useState(''); const [verified, setVerified] = useState(false)
   const [selected, setSelected] = useState(''); const [backups, setBackups] = useState<Backup[]>([])
   useEffect(() => {
     let active = true
-    const refresh = () => { void store.view().then(v => { if (active) { setView(v); setSignedIn(Boolean(engine.api.session)) } }).catch(e => { if (active) setError((e as Error).message) }) }
-    refresh(); const stop = engine.start()
-    window.addEventListener('workout-storage', refresh); window.addEventListener('online', refresh); window.addEventListener('offline', refresh)
+    let latestRead = 0
+    const panel = advanced.current
+    const refresh = async () => {
+      const read = ++latestRead
+      try {
+        const state = panel?.open
+          ? await store.view().then(details => ({ details, settings: details.settings, pending: details.pending.length, conflicts: details.conflicts.length }))
+          : await store.summary()
+        if (active && read === latestRead) { setSummary(state); setSignedIn(Boolean(engine.api.session)) }
+      } catch (e) { if (active && read === latestRead) setRunnerError((e as Error).message) }
+    }
+    const connectivity = () => setOnline(navigator.onLine)
+    refresh(); const stop = engine.start(running => {
+      if (running) setRunnerError('')
+      setSyncing(running)
+      if (!running) refresh()
+    }, e => { if (active) setRunnerError(e.message) })
+    window.addEventListener('workout-storage', refresh); window.addEventListener('online', connectivity); window.addEventListener('offline', connectivity)
+    panel?.addEventListener('toggle', refresh)
     const channel = typeof BroadcastChannel === 'undefined' ? undefined : new BroadcastChannel('workout-storage'); if (channel) channel.onmessage = refresh
-    return () => { active = false; stop(); window.removeEventListener('workout-storage', refresh); window.removeEventListener('online', refresh); window.removeEventListener('offline', refresh); channel?.close() }
+    return () => { active = false; stop(); panel?.removeEventListener('toggle', refresh); window.removeEventListener('workout-storage', refresh); window.removeEventListener('online', connectivity); window.removeEventListener('offline', connectivity); channel?.close() }
   }, [store, engine])
   async function action(work: () => Promise<unknown>) {
     setBusy(true); setError('')
-    try { await work() } catch (e) { setError((e as Error).message) }
-    finally { setBusy(false); setSignedIn(Boolean(engine.api.session)); try { setView(await store.view()) } catch { /* storage error already visible */ } }
+    try { await work() } catch (e) {
+      setError((e as Error).message)
+      // Directory actions can discover an expired session before the next poll.
+      if (e instanceof ApiError && e.code === 'UNAUTHENTICATED' && summary?.settings.enabled) {
+        await store.patch({ signInRequired: true, error: e.message }, summary.settings.controlVersion ?? 0)
+          .catch((failure: Error) => setRunnerError(failure.message))
+      }
+    }
+    finally { setBusy(false); setSignedIn(Boolean(engine.api.session)) }
   }
   async function directory() {
     const state = await store.settings()
     if (state.principalId && state.principalId !== engine.api.session?.principalId) throw new Error('Sign in as the owner already connected to this browser. Local records and pending edits are retained.')
     const people = await engine.api.directory('people'); const spaces = await engine.api.directory('spaces'); await store.cacheDirectory(people, spaces)
   }
-  const s = view?.settings
-  const status = !s?.enabled ? 'Local only' : s.phase === 'recovery' ? 'Recovery required' : s.phase === 'initial' ? 'Initial reconciliation' : view?.conflicts.length ? 'Conflict needs attention' : navigator.onLine === false ? 'Offline' : s.error ? s.error.includes('Authentication') ? 'Authentication expired' : 'Server error' : !signedIn ? 'Not signed in' : view?.pending.length ? 'Pending changes' : 'Synchronized'
+  const s = summary?.settings
+  const needsLogin = s?.signInRequired || (!s?.enabled && !signedIn)
+  const hasConflict = Boolean(summary?.conflicts)
+  const needsReview = s?.phase === 'initial' || s?.phase === 'recovery'
+  const pending = summary?.pending ?? 0
+  function headerStatus() {
+    if (!online) return 'Offline'
+    if (runnerError) return 'Attention needed'
+    if (syncing) return 'Syncing'
+    if (needsLogin) return 'Sign in required'
+    if (!s?.enabled || hasConflict || needsReview || s.error) return 'Attention needed'
+    if (pending || !s.lastConfirmed || s.catchUpPending !== false) return 'Changes pending'
+    return 'Synced'
+  }
+  const status = headerStatus()
+  const route = !s?.enabled ? (s?.spaceId ? 'Resume sync' : 'Set up sync')
+    : needsLogin ? 'Sign in again' : needsReview ? 'Review connection' : hasConflict ? 'Review conflicts'
+    : status === 'Attention needed' ? 'View sync details' : ''
+  const destination = !s?.enabled || needsLogin ? 'sync-account' : needsReview ? 'sync-review' : hasConflict ? 'sync-conflicts' : 'sync-settings'
   const target = view && [...view.plans.map(value => ({ kind: 'plan' as Kind, value })), ...view.sessions.map(value => ({ kind: 'session' as Kind, value }))].find(x => `${x.kind}:${x.value.id}` === selected)
   const meta = view?.metadata.find(m => m.id === selected)
   const people = meta?.people ?? []
   function tags(next: Association[]) { if (target) void action(() => store.tag(target.kind, target.value.id, next)) }
-  return <details className="sync-panel"><summary>Settings / Synchronization · {status}{view?.pending.length ? ` · ${view.pending.length} pending` : ''}</summary>
+  return <><div className="sync-header" aria-label="Synchronization">
+    <div className="sync-controls">
+      <span className="sync-state" aria-live="polite" data-state={status}>{summary || runnerError ? status : 'Checking sync…'}</span>
+      <button type="button" disabled={!online || !s?.enabled || busy || syncing || Boolean(s.signInRequired) || Boolean(needsReview && s.stageComplete)}
+        onClick={() => void action(() => engine.run(true))}>Sync</button>
+    </div>
+    {!online && <span>Edits stay on this device.{pending > 0 && ' Saved changes are waiting.'}</span>}
+    {s?.lastConfirmed && <span>Last synced <time dateTime={s.lastConfirmed} title={new Date(s.lastConfirmed).toLocaleString()}>{new Date(s.lastConfirmed).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</time></span>}
+    {(summary || runnerError) && route && <a href={`#${destination}`} onClick={() => { if (advanced.current) advanced.current.open = true }}>{route}</a>}
+  </div>
+  <details className="sync-panel" ref={advanced}><summary id="sync-settings">Advanced sync settings</summary>
     <div className="sync-content" aria-label="Synchronization settings">
       <p>Workouts remain usable offline. Connect to reconcile confirmed plans and saved sessions across devices. Recovery drafts are never uploaded. Conflicts may need review. Download and check a backup before connecting. Logout keeps local data and pending edits.</p>
       <p>{view?.plans.length ?? 0} plans · {view?.sessions.length ?? 0} saved sessions · {view?.conflicts.length ?? 0} conflicts</p>
-      <p>Space: {view?.spaces.find(x => x.id === s?.spaceId)?.name ?? 'Not selected'} · {signedIn ? 'Signed in' : 'Not signed in'}<br />Last successful exchange: {s?.lastSuccess ? new Date(s.lastSuccess).toLocaleString() : 'Never'}</p>
-      {(error || s?.error) && <p className="sync-error" aria-live="polite">{error || s?.error}</p>}
-      <fieldset disabled={busy}>
+      <p id="sync-account" tabIndex={-1}>Space: {view?.spaces.find(x => x.id === s?.spaceId)?.name ?? 'Not selected'} · {signedIn && !s?.signInRequired ? 'Signed in' : 'Not signed in'}</p>
+      {(error || runnerError || s?.error) && <p className="sync-error" aria-live="polite">{error || runnerError || s?.error}</p>}
+      <fieldset disabled={busy || !view}>
         <div className="actions"><button onClick={() => void action(async () => { const b = await store.export(localStorage.getItem('workout-companion-draft-v1')); download(b, `workout-backup-${b.id}.json`); setExportId(b.id); setVerified(false) })}>Download local backup</button><button onClick={() => void action(async () => setBackups(await store.backups()))}>Show preserved copies</button></div>
         {backups.map(b => <button key={b.id} onClick={() => download(b, `workout-preserved-${b.id}.json`)}>{b.reason} · {new Date(b.createdAt).toLocaleString()}</button>)}
-        {!signedIn ? <form onSubmit={e => { e.preventDefault(); const form = e.currentTarget; const data = new FormData(form); const username = String(data.get('username')); const password = String(data.get('password')); form.reset(); void action(async () => { await engine.api.login(username, password); await directory(); await engine.run(true) }) }}>
+        {!signedIn || s?.signInRequired ? <form onSubmit={e => { e.preventDefault(); const form = e.currentTarget; const data = new FormData(form); const username = String(data.get('username')); const password = String(data.get('password')); form.reset(); void action(async () => { await engine.api.login(username, password); await directory(); await engine.run(true) }) }}>
           <h3>Owner sign in</h3><label>Username<input name="username" autoComplete="username" required /></label><label>Password<input name="password" type="password" autoComplete="current-password" required /></label><button type="submit">Sign in</button><button type="button" onClick={() => void action(async () => { await engine.api.restore(); await directory(); await engine.run(true) })}>Restore signed-in session</button>
         </form> : <div className="actions"><button onClick={() => void action(directory)}>Refresh People and Spaces</button><button onClick={() => void action(async () => { await store.patch({ enabled: false }); await engine.api.logout() })}>Logout and pause sync</button></div>}
         {!s?.enabled && signedIn && <section>
@@ -68,16 +137,38 @@ export function SyncPanel({ store }: { store: SyncStore }) {
           <label className="check"><input type="checkbox" checked={verified} onChange={e => setVerified(e.target.checked)} />I downloaded and checked my backup. I consent to reconcile these confirmed records in this personal Space.</label>
           <button className="primary" disabled={!exportId || !verified || !(s?.spaceId ?? spaceId)} onClick={() => void action(async () => { const space = view!.spaces.find(x => x.id === (s?.spaceId ?? spaceId)); if (!space) throw new Error('Refresh and select a Space.'); await store.begin(space, engine.api.session!.principalId, exportId); await engine.run(true) })}>Connect and download for review</button>
         </section>}
-        {s?.enabled && <div className="actions"><button onClick={() => void action(() => engine.run(true))}>Sync now / retry</button><button onClick={() => void action(() => engine.pause())}>Disconnect / pause</button></div>}
-        {s?.enabled && s.phase !== 'ready' && s.phase !== 'local' && <section><h3>{s.phase === 'recovery' ? 'Server restore recovery' : 'Review first connection'}</h3><p>The server snapshot is downloaded separately. Local history and pending changes remain intact. Reconciliation downloads remote-only records and lists divergent records for individual review. Missing local records are never silently deleted during recovery.</p><p>Downloaded: {view?.staged.filter(x => x.kind === 'plan').length ?? 0} plans, {view?.staged.filter(x => x.kind === 'session').length ?? 0} sessions, including {view?.staged.filter(x => x.deleted).length ?? 0} deletion markers. Compare these with the local counts above before continuing.</p><button disabled={!s.stageComplete} onClick={() => void action(async () => { await store.reconcile(); await engine.run(true) })}>{s.stageComplete ? 'Reconcile downloaded records' : 'Downloading server snapshot…'}</button></section>}
-        {view?.conflicts.map(c => <section className="sync-conflict" key={c.id}><h3>{conflictTitle(c)}</h3><p>{c.code} · Changed fields: {differences(c)}</p><p>Server device: {c.current?.deviceId ?? 'No server record'}. Your pending edits are retained on this device.</p><div className="sync-comparison"><details><summary>Local version</summary><pre>{JSON.stringify({ value: c.local, people: c.people }, null, 2)}</pre></details><details><summary>Server version</summary><pre>{JSON.stringify(c.current, null, 2)}</pre></details></div><p>Keeping the server version replaces this local record (or removes it if absent/deleted). Keeping local submits a new edit against the displayed server revision, explicitly restoring a server-deleted record. Both versions are preserved in downloadable copies.</p><div className="actions"><button onClick={() => { if (window.confirm('Replace this local record with the displayed server version? A preserved copy remains exportable.')) void action(() => store.resolve(c.id, c.generation, 'server')) }}>Keep server version</button><button onClick={() => { if (window.confirm('Keep your local record and overwrite the displayed server revision, including explicit resurrection if deleted?')) void action(() => store.resolve(c.id, c.generation, 'local')) }}>Keep local version</button></div><p>To revisit later, leave this comparison unresolved. Other records can still sync.</p></section>)}
+        {s?.enabled && <div className="actions"><button onClick={() => void action(() => engine.pause())}>Disconnect / pause</button></div>}
+        {s?.enabled && s.phase !== 'ready' && s.phase !== 'local' && <section id="sync-review" tabIndex={-1}><h3>{s.phase === 'recovery' ? 'Server restore recovery' : 'Review first connection'}</h3><p>The server snapshot is downloaded separately. Local history and pending changes remain intact. Reconciliation downloads remote-only records and lists divergent records for individual review. Missing local records are never silently deleted during recovery.</p><p>Downloaded: {view?.staged.filter(x => x.kind === 'plan').length ?? 0} plans, {view?.staged.filter(x => x.kind === 'session').length ?? 0} sessions, including {view?.staged.filter(x => x.deleted).length ?? 0} deletion markers. Compare these with the local counts above before continuing.</p><button disabled={!s.stageComplete} onClick={() => void action(async () => { await store.reconcile(); await engine.run(true) })}>{s.stageComplete ? 'Reconcile downloaded records' : 'Downloading server snapshot…'}</button></section>}
+        <div id="sync-conflicts" tabIndex={-1}>{view?.conflicts.map(c => <section className="sync-conflict" key={c.id}>
+          <h3>{conflictTitle(c)}</h3>
+          <p>Choose which copy to keep. You can leave this decision for later while other records sync.</p>
+          <div className="sync-comparison">
+            <ConflictCopy title="This device" value={c.local} labels={c.people} people={view.people} />
+            <ConflictCopy title="Server" value={c.current?.value ?? null} labels={c.current?.people ?? []} people={view.people} />
+          </div>
+          <details className="sync-comparison-details"><summary>Detailed comparison</summary>
+            <p>{c.code} · Changed fields: {differences(c)}</p>
+            <pre>{JSON.stringify({ local: { value: c.local, people: c.people }, server: c.current }, null, 2)}</pre>
+          </details>
+          <p>The selected copy replaces the other one, including a deletion. Both versions are preserved for download.</p>
+          <div className="actions">
+            <button onClick={() => { if (window.confirm('Replace this local record with the displayed server version? A preserved copy remains exportable.')) void action(() => store.resolve(c.id, c.generation, 'server')) }}>Keep server version</button>
+            <button onClick={() => { if (window.confirm('Replace the server record with this local version, including restoring it if deleted? A preserved copy remains exportable.')) void action(() => store.resolve(c.id, c.generation, 'local')) }}>Keep local version</button>
+          </div>
+        </section>)}</div>
         <section><h3>People and record labels</h3><p>A Person is a label, not a login. Creating People requires an online signed-in connection. Existing associations, including multiple roles, are retained.</p>
           {signedIn && <form onSubmit={e => { e.preventDefault(); const form = e.currentTarget; const name = String(new FormData(form).get('person')).trim(); void action(async () => { const intent = await store.creation('personCreation', name); const existing = (await engine.api.directory('people')).find(x => x.id === intent.id); if (!existing) await engine.api.createPerson(intent.id, intent.name); await directory(); await store.finishPersonCreation(intent.id); form.reset() }) }}><label>Person name<input name="person" required maxLength={100} /></label><button disabled={navigator.onLine === false}>Create Person (online)</button></form>}
           <ul>{view?.people.map(p => <li key={p.id}>{p.displayName}{p.archived ? ' (archived)' : ''}</li>)}</ul>
           <label>Saved record<select aria-label="Saved record" value={selected} onChange={e => setSelected(e.target.value)}><option value="">Choose a plan or saved session</option>{view?.plans.map(p => <option key={`plan:${p.id}`} value={`plan:${p.id}`}>Plan · {'name' in p ? p.name : p.id}</option>)}{view?.sessions.map(p => <option key={`session:${p.id}`} value={`session:${p.id}`}>Session · {'date' in p ? p.date : ''} · {p.id.slice(0, 8)}</option>)}</select></label>
           {target && <><ul>{people.map((p, i) => <li key={`${p.personId}:${p.role}`}>{view?.people.find(x => x.id === p.personId)?.displayName ?? p.personId} · {p.role} <button onClick={() => tags(people.filter((_, index) => index !== i))}>Remove association</button></li>)}</ul><label>Add Person as subject<select aria-label="Add Person as subject" value="" onChange={e => { if (!people.some(p => p.personId === e.target.value && p.role === 'subject')) tags([...people, { personId: e.target.value, role: 'subject' }]) }}><option value="">Choose Person</option>{view?.people.filter(p => !p.archived).map(p => <option value={p.id} key={p.id}>{p.displayName}</option>)}</select></label><button onClick={() => { if (window.confirm('Delete this saved record locally and queue its deletion for the connected Space? A preserved copy remains exportable.')) void action(async () => { await store.delete(target.kind, target.value.id); setSelected('') }) }}>Delete selected record…</button></>}
         </section>
+        {s && <details className="sync-diagnostics"><summary>Diagnostics</summary>
+          <dl><dt>Pending edits</dt><dd>{pending}</dd><dt>Connection phase</dt><dd>{s.phase}</dd>
+            <dt>Last successful exchange</dt><dd>{s.lastSuccess ? new Date(s.lastSuccess).toLocaleString() : 'Never'}</dd>
+            <dt>Retry after</dt><dd>{s.nextRetry ? new Date(s.nextRetry).toLocaleString() : 'No delay'}</dd>
+          </dl>
+        </details>}
       </fieldset>
     </div>
-  </details>
+  </details></>
 }

@@ -112,9 +112,11 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
   const finished = session?.status === 'completed'
 
   return <main className="runner">
-    <header><p className="eyebrow">WORKOUT COMPANION / LOCAL TRAINING LOG</p><h1>One set at a time.</h1><p>Your plan, your last lift, your next set.</p></header>
+    <header className="app-header">
+      <div><p className="eyebrow">WORKOUT COMPANION / LOCAL TRAINING LOG</p><h1>One set at a time.</h1><p>Your plan, your last lift, your next set.</p></div>
+      <SyncPanel store={syncStore} />
+    </header>
     <PwaStatus canReload={!dirty && !busy && !loading && !recovery.error} />
-    <SyncPanel store={syncStore} />
     {plan.id === demoPlan.id && <aside className="demo"><strong>DEMO workspace</strong><span>Sample plan only. These practice sessions are not imported workout history. Monday is the only available sample plan; you can practice it on any date.</span></aside>}
     {plans.length > 1 && <label className="plan-picker">Saved plan<select value={plan.id} disabled={dirty || busy} onChange={e => { setPlanId(e.target.value); setSession(undefined); setDay(days[((plans.find(p => p.id === e.target.value)?.weekday ?? 1) + 6) % 7]) }}>{plans.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>}
     <nav className="week" aria-label="Weekly day selector">{days.map(d => <button key={d} aria-pressed={day === d} onClick={() => setDay(d)}>{d}<small>{d === availableDay ? 'Strength' : 'No plan'}</small></button>)}</nav>
@@ -149,7 +151,7 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
       </section>
       <aside className="history" aria-label="Saved sessions"><h2>On this device</h2><p>Saved workouts · {date}</p>{records.filter(s => s.date === date).length === 0 && <p>No saved sessions for this date.</p>}{records.filter(s => s.date === date).map(row => <button key={row.id} disabled={busy || dirty} onClick={() => { setSession(structuredClone(row)); setDay(days[((plans.find(p => p.id === row.planId)?.weekday ?? 1) + 6) % 7]); setMessage('Reopened saved session.'); setError('') }}>{row.demo ? 'DEMO ' : ''}{row.date} · {row.status}<small>Open saved workout · {row.id.slice(0, 8)}</small></button>)}<p>Save your draft before changing dates or opening another workout.</p><button disabled={busy} onClick={() => void refresh()}>Retry storage / refresh history</button></aside>
     </div>
-    <footer className="save-status"><p role="status" aria-live="polite">{message || 'Ready when you are. Workouts save on this device; optional synchronization is in Settings.'}</p>{error && <p role="alert">{error}</p>}</footer>
+    <footer className="save-status"><p role="status" aria-live="polite">{message || 'Confirm a save to add your workout to local history.'}</p>{error && <p role="alert">{error}</p>}</footer>
   </main>
 }
 export default App

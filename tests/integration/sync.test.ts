@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto'
-import { afterEach, beforeEach, expect, test } from 'vitest'
+import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { fixture, password, type Fixture } from '../support/local-service.mjs'
 import { SessionStore, openDatabase } from '../../src/storage'
 import { SyncStore } from '../../src/sync-store'
@@ -32,6 +32,23 @@ test('real HTTP auth rejects invalid credentials, protects exchange, restores CS
   await api.restore(); expect(api.session!.csrfToken).toBe(csrf)
   api.session!.csrfToken = 'wrong'; await expect(api.createPerson(crypto.randomUUID(), 'Test')).rejects.toThrow('CSRF_REQUIRED')
   await api.restore(); await api.logout(); await expect(api.restore()).rejects.toThrow('Authentication expired')
+})
+
+test('a stale tab token restores the valid cookie on automatic retry', async () => {
+  const d = await device()
+  await connect(d)
+  await d.local.ensurePlan(demoPlan)
+  const original = await d.store.batch()
+  d.api.session!.csrfToken = 'stale-token'
+  await d.engine.run()
+  const state = await d.store.settings()
+  expect(state.error).toContain('CSRF_REQUIRED')
+  expect(state.signInRequired).toBe(false)
+  expect(await d.store.batch()).toEqual(original)
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(state.nextRetry + 1)
+  try { await d.engine.run(false, true) } finally { clock.mockRestore() }
+  expect((await d.store.summary()).pending).toBe(0)
+  expect((await d.store.settings()).error).toBeUndefined()
 })
 
 test('two independent databases sync confirmed history, offline edits, People associations and conflicts', async () => {
