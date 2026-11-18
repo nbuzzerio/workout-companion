@@ -122,7 +122,7 @@ export class SyncEngine {
     this.schedule = schedule
     const notice = (value: StorageNotice | undefined) => {
       if (value?.type === 'local' || (value?.type === 'control' && value.enabled)) schedule()
-      else if (value?.type === 'control') { clearTimeout(this.timer); this.timer = undefined; this.wakeRequested = false; this.api.abort() }
+      else if (value?.type === 'control') { clearTimeout(this.timer); this.timer = undefined; this.wakeRequested = false; this.api.abortSync() }
       // Cursor/ACK/directory/retry writes refresh views only, never wake sync.
     }
     const changed = (event: Event) => notice((event as CustomEvent<StorageNotice>).detail)
@@ -139,5 +139,5 @@ export class SyncEngine {
       window.removeEventListener('workout-storage', changed); document.removeEventListener('visibilitychange', foreground)
     }
   }
-  async pause() { await this.store.patch({ enabled: false }); this.api.abort() }
+  async pause() { await this.store.patch({ enabled: false }); this.api.abortSync() }
 }

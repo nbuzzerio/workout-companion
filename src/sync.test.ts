@@ -106,10 +106,35 @@ test('unknown schema is rejected before cursor or local state can change', () =>
 
 test('API uses same-origin no-store and in-memory CSRF; login/logout clear secrets', async () => {
   const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify({ principalId: principal, csrfToken: 'csrf', expiresAt: 123 }))).mockResolvedValueOnce(new Response(null, { status: 204 }))
-  const api = new SyncApi(fetcher); await api.login('synthetic', 'never-persist'); await api.logout()
-  expect(fetcher.mock.calls[0][0]).toBe('/api/v1/auth/login')
-  expect(fetcher.mock.calls[0][1]).toMatchObject({ credentials: 'same-origin', cache: 'no-store', redirect: 'error' })
+  const api = new SyncApi(fetcher); await api.login('never-persist'); await api.logout()
+  expect(fetcher.mock.calls[0][0]).toBe('/api/v1/auth/household-login')
+  expect(fetcher.mock.calls[0][1]).toMatchObject({ body: JSON.stringify({ password: 'never-persist' }), credentials: 'same-origin', cache: 'no-store', redirect: 'error' })
   expect(fetcher.mock.calls[1][1]?.headers).toMatchObject({ 'X-CSRF-Token': 'csrf' }); expect(api.session).toBeNull()
+})
+
+test('a session read started before login cannot replace its new CSRF token', async () => {
+  let finish!: (response: Response) => void
+  const pending = new Promise<Response>(resolve => { finish = resolve })
+  const payload = (csrfToken: string) => Response.json({ principalId: principal, csrfToken, expiresAt: 123 })
+  const api = new SyncApi(vi.fn<typeof fetch>().mockReturnValueOnce(pending).mockResolvedValueOnce(payload('new')))
+  const old = api.restore()
+  await api.login('synthetic')
+  finish(payload('old'))
+  await expect(old).rejects.toThrow('superseded')
+  expect(api.session?.csrfToken).toBe('new')
+})
+
+test('a transient logout failure keeps the session available to retry logout', async () => {
+  const fetcher = vi.fn<typeof fetch>()
+    .mockResolvedValueOnce(Response.json({ principalId: principal, csrfToken: 'token', expiresAt: 123 }))
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValueOnce(new Response(null, { status: 204 }))
+  const api = new SyncApi(fetcher)
+  await api.restore()
+  await expect(api.logout()).rejects.toThrow('offline')
+  expect(api.authState).toBe('signed-in')
+  await api.logout()
+  expect(api.authState).toBe('signed-out')
 })
 
 test('server deletion retains local history until explicit choice, resurrection uses new UUID', async () => {

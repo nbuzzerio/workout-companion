@@ -12,7 +12,7 @@ beforeEach(async () => { f = await fixture(); space = f.space() })
 afterEach(async () => { await f.close() })
 async function device() {
   const name = crypto.randomUUID(); const open = () => openDatabase(name); const store = new SyncStore(open); const local = new SessionStore(open)
-  const api = new SyncApi(f.clientFetch()); await api.login('synthetic-owner', password)
+  const api = new SyncApi(f.clientFetch()); await api.login(password)
   const engine = new SyncEngine(store, api, async work => work())
   return { store, local, api, engine, open }
 }
@@ -27,8 +27,8 @@ function put(value = demoPlan, baseServerVersion: string | null = null): Operati
 test('real HTTP auth rejects invalid credentials, protects exchange, restores CSRF, expires and logs out', async () => {
   const api = new SyncApi(f.clientFetch())
   await expect(api.restore()).rejects.toThrow('Authentication expired')
-  await expect(api.login('synthetic-owner', 'bad')).rejects.toThrow('Incorrect')
-  await api.login('synthetic-owner', password); const csrf = api.session!.csrfToken; api.session = null
+  await expect(api.login('bad')).rejects.toThrow('Incorrect')
+  await api.login(password); const csrf = api.session!.csrfToken; api.session = null
   await api.restore(); expect(api.session!.csrfToken).toBe(csrf)
   api.session!.csrfToken = 'wrong'; await expect(api.createPerson(crypto.randomUUID(), 'Test')).rejects.toThrow('CSRF_REQUIRED')
   await api.restore(); await api.logout(); await expect(api.restore()).rejects.toThrow('Authentication expired')
@@ -71,7 +71,7 @@ test('two independent databases sync confirmed history, offline edits, People as
 
 test('lost HTTP response replays identical immutable operation and server applies only once', async () => {
   const d = await device(); await connect(d); await d.local.ensurePlan(demoPlan)
-  const original = f.clientFetch(); const api = new SyncApi(original); await api.login('synthetic-owner', password)
+  const original = f.clientFetch(); const api = new SyncApi(original); await api.login(password)
   let drop = true; const requests: string[] = []
   const flaky = new SyncApi(async (url, init) => { const r = await original(url, init); if (String(url).endsWith('/exchange')) { requests.push(String(init?.body)); if (drop) { drop = false; throw new Error('Lost response') } } return r }); flaky.session = api.session
   const engine = new SyncEngine(d.store, flaky, async work => work())
@@ -101,7 +101,7 @@ test('real SQLite restore preserves acknowledged missing records and pending edi
   const s = await d.local.complete(createSession(demoPlan, '2026-11-09'))
   const pending = await d.store.batch(); await f.restore(backup)
   await d.engine.run(true); expect((await d.store.settings()).error).toContain('Authentication expired')
-  await d.api.login('synthetic-owner', password); await d.engine.run(true)
+  await d.api.login(password); await d.engine.run(true)
   expect((await d.store.settings()).phase).toBe('recovery'); expect(await d.store.batch()).toEqual(pending); expect(await d.local.reopen(s.id)).toEqual(s)
   await d.store.reconcile(); const conflicts = (await d.store.view()).conflicts; expect(conflicts).toHaveLength(2)
   for (const c of conflicts) await d.store.resolve(c.id, c.generation, 'local')
@@ -124,7 +124,7 @@ test('independent records from two devices survive downtime and authentication e
   f.db.prepare('DELETE FROM sessions').run(); await a.engine.run(true); expect((await a.store.view()).pending).toHaveLength(1)
   const down = new SyncEngine(b.store, new SyncApi(async () => { throw Error('Backend unavailable') }), async work => work()); await down.run(true)
   expect((await b.store.view()).pending).toHaveLength(1); expect((await b.store.settings()).nextRetry).toBeGreaterThan(Date.now())
-  await a.api.login('synthetic-owner', password); await b.api.login('synthetic-owner', password)
+  await a.api.login(password); await b.api.login(password)
   await a.engine.run(true); await b.engine.run(true); await a.engine.run(true)
   expect((await a.local.list()).map(s => s.id).sort()).toEqual([x.id, y.id].sort()); expect((await b.local.list()).map(s => s.id).sort()).toEqual([x.id, y.id].sort())
 })
@@ -175,7 +175,7 @@ test('pause retains a server-accepted delayed response even if the other tab mis
     if (String(url).endsWith('/exchange') && delay) { delay = false; expect(response.ok).toBe(true); notifyAccepted(); await held }
     return response
   })
-  await api.login('synthetic-owner', password)
+  await api.login(password)
   const engine = new SyncEngine(d.store, api, async work => work()); const running = engine.run(true)
   try {
     await accepted

@@ -77,7 +77,9 @@ The server infrastructure is already provisioned; do not rerun bootstrap.
 
 ## Synchronization
 
-Use **Set up sync** in the header to sign in, choose a personal Space, check a
+Workout restores the shared household session automatically. If sign-in is needed, enter the household password in **Advanced sync settings**. The backend must be released first. [Household authentication release report](docs/HOUSEHOLD_AUTH_V1.md)
+
+Use **Set up sync** in the header to choose a personal Space, check a
 backup and review the first download. Once connected, confirmed saves, opening
 the app, returning to it and reconnecting trigger automatic two-way sync.
 The header **Sync** button runs a pass immediately. **Review conflicts** leads

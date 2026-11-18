@@ -6,9 +6,11 @@ import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
 test('production runner saves, reopens, completes and works offline at deep links', async ({ page, context }, testInfo) => {
-  const apiRequests: string[] = []
+  const unexpectedRequests: string[] = []
   page.on('request', request => {
-    if (new URL(request.url()).pathname.startsWith('/api/') || new URL(request.url()).origin !== 'http://127.0.0.1:4173') apiRequests.push(request.url())
+    const url = new URL(request.url())
+    const sessionCheck = url.pathname === '/api/v1/auth/session' && request.method() === 'GET'
+    if (url.origin !== 'http://127.0.0.1:4173' || (url.pathname.startsWith('/api/') && !sessionCheck)) unexpectedRequests.push(request.url())
   })
   page.on('dialog', dialog => void dialog.accept())
   await page.goto(appConfig.basePath)
@@ -57,7 +59,7 @@ test('production runner saves, reopens, completes and works offline at deep link
   await expect(page.getByText(/Workout finished/)).toBeVisible()
   await expect(page.getByLabel('DB Deadlift set 1 reps')).toHaveValue('8')
   await expect(page.getByLabel('DB Deadlift set 1 reps')).toBeDisabled()
-  expect(apiRequests).toEqual([])
+  expect(unexpectedRequests).toEqual([])
 })
 
 test('pre-integration native IndexedDB records and metadata remain byte-for-byte equivalent', async ({ page }) => {

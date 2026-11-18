@@ -25,7 +25,7 @@ Terminal 2:
 pnpm dev --port 5174 --strictPort
 ```
 
-Open `http://127.0.0.1:5174/apps/workout/` in a dedicated test profile. The synthetic owner is `synthetic-owner` and its synthetic password is `synthetic-workout-passphrase-only`. These are fixture credentials, not production credentials. Every harness launch creates a new SQLite database/owner. Retain the same harness process while testing two devices/contexts. Stop it when done.
+Open `http://127.0.0.1:5174/apps/workout/` in a dedicated test profile. In Advanced sync settings, enter the fixture password `synthetic-workout-passphrase-only` if the browser needs to sign in. These are fixture credentials, not production credentials. Every harness launch creates a new SQLite database/owner. Retain the same harness process while testing two devices/contexts. Stop it when done.
 
 The harness sets `NODE_ENV=test`, `PUBLIC_ORIGIN=http://127.0.0.1:5174`, binds backend port 4317 to loopback, migrates the fresh SQLite database, and invokes the actual backend HTTP app. Vite proxies `/api/v1` to `http://127.0.0.1:4317` without changing Origin. Development cookies therefore work through the frontend origin and the backend's real CSRF/Origin checks remain enabled.
 
@@ -64,8 +64,7 @@ exchange with no outgoing writes, both streams caught up and no pending edits
 or unresolved conflicts. Draft edits and local-save messages have their own
 meaning and never advance that time.
 
-Keep backup, consent, Space selection and first reconciliation in setup. An
-already-connected browser restores its session on opening. Reauthentication
+Keep backup, consent, Space selection and first reconciliation in setup. Every online browser checks its household session on opening, including a fresh or paused Workout installation. Reauthentication
 resumes the existing connection. An explicit pause or logout retains the
 existing fresh-backup and consent requirement for reconnecting. Keep exports,
 People associations, recovery, detailed comparisons and diagnostics behind the
@@ -93,7 +92,7 @@ pnpm test:sync:browser
 
 - `verify`: typecheck, lint, unit/component tests, infrastructure tests, production artifact/build validation and existing production PWA browser regressions.
 - `test:sync`: isolated actual Express/SQLite HTTP integration tests, with independent fake IndexedDB instances and cookie jars; includes a real backup/isolated restore.
-- `test:sync:browser`: starts the actual disposable backend and Vite production preview in a managed test lifecycle (run the build first); exercises independent Chromium contexts, offline edits, login/consent, conflicts, People, mobile width, service-worker offline reload/cache exclusion, and Web Locks across tabs. Both services close explicitly, avoiding Windows process-tree termination requirements.
+- `test:sync:browser`: starts the actual disposable backend and Vite production preview in a managed test lifecycle (run the build first); exercises independent Chromium contexts, offline edits, login/consent, conflicts, People, mobile width, service-worker offline reload/cache exclusion, and Web Locks across tabs. Each test uses fresh API rate limits and an isolated SQLite database. Both services close explicitly, avoiding Windows process-tree termination requirements.
 
 Tests reject external transport URLs. The browser fixture reserves ports 4317 and 5174; stop manual development processes first. The production PWA regression suite uses 4173.
 

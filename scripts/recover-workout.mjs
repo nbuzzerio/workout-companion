@@ -90,7 +90,10 @@ document.getElementById('restore').onclick = async () => {
       const file = resolve(dist, relative);
       if (!file.startsWith(dist.endsWith(sep) ? dist : dist + sep)) { res.writeHead(403).end(); return; }
       const extension = file.slice(file.lastIndexOf('.'));
-      res.setHeader('Content-Type', types[extension] ?? 'application/octet-stream'); res.end(await readFile(file));
+      res.setHeader('Content-Type', types[extension] ?? 'application/octet-stream'); if (relative === 'index.html') {
+        const runner = await readFile(file, 'utf8');
+        res.end(runner.replace('<head>', '<head><meta name="workout-offline-recovery" content="true">'));
+      } else res.end(await readFile(file));
     } catch { res.writeHead(404).end(); }
   });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });

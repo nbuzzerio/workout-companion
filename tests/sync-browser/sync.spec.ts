@@ -3,9 +3,12 @@ import { startRecoveryServer } from '../../scripts/recover-workout.mjs'
 import { mkdir, mkdtemp } from 'node:fs/promises'
 import { resolve, join } from 'node:path'
 import { demoPlan } from '../../src/workouts.ts'
-const password = 'synthetic-workout-passphrase-only'
+import { fixture, password, type Fixture } from '../support/local-service.mjs'
+let service: Fixture
+test.beforeEach(async () => { service = await fixture('http://127.0.0.1:5174', 4317) })
+test.afterEach(async () => { await service?.close() })
 async function panel(page: Page) { const details = page.locator('.sync-panel'); if ((await details.getAttribute('open')) === null) await details.locator('summary').first().click() }
-async function login(page: Page) { await panel(page); await page.getByLabel('Username', { exact: true }).fill('synthetic-owner'); await page.getByLabel('Password', { exact: true }).fill(password); await page.getByRole('button', { name: 'Sign in', exact: true }).click(); await expect(page.getByRole('button', { name: 'Logout and pause sync' })).toBeVisible() }
+async function login(page: Page) { await panel(page); await page.getByLabel('Password', { exact: true }).fill(password); await page.getByRole('button', { name: 'Sign in', exact: true }).click(); await expect(page.getByRole('button', { name: 'Logout and pause sync' })).toBeVisible() }
 async function connect(page: Page, name: string, create = false) {
   await login(page)
   if (create) { await page.getByLabel('New personal Space name').fill(name); await page.getByRole('button', { name: 'Create personal Space', exact: true }).click() }
@@ -195,10 +198,45 @@ test('login and restored authentication without consent never exchange workouts'
     await page.goto('/apps/workout/'); await page.getByRole('button', { name: 'Start Workout' }).click(); await page.getByRole('button', { name: 'Save session', exact: true }).click()
     await expect.poll(() => pending(page)).toBe(2)
     const before = (await localState(page)).syncOutbox
+    await panel(page)
+    await expect(page.getByLabel('Username')).toHaveCount(0)
+    await page.getByLabel('Password', { exact: true }).fill('synthetic-wrong')
+    await page.getByRole('button', { name: 'Sign in', exact: true }).click()
+    await expect(page.locator('.sync-error')).toHaveText('Incorrect household password.')
+    await expect(page.getByLabel('Password', { exact: true })).toHaveValue('')
+    expect((await localState(page)).syncOutbox).toEqual(before)
     await login(page); await page.waitForTimeout(3500)
-    await page.reload(); await panel(page); await page.getByRole('button', { name: 'Restore signed-in session' }).click(); await page.waitForTimeout(3500)
+    await page.reload(); await panel(page); await expect(page.getByRole('button', { name: 'Logout and pause sync' })).toBeVisible(); await page.waitForTimeout(3500)
     expect(exchanges).toEqual([]); expect((await localState(page)).syncOutbox).toEqual(before)
   } finally { await context.close() }
+})
+
+test('a sibling app and two Workout tabs share the cookie and observe logout without enabling sync', async ({ context, page }) => {
+  const sibling = await context.newPage()
+  await sibling.route('**/apps/family-calendar/', route => route.fulfill({ contentType: 'text/html', body: '<title>Session contract fixture</title>' }))
+  await sibling.goto('/apps/family-calendar/')
+  const principal = await sibling.evaluate(async password => {
+    const r = await fetch('/api/v1/auth/household-login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password }) })
+    return (await r.json()).principalId
+  }, password)
+  expect(principal).toBe(service.owner)
+  let prompts = 0
+  context.on('request', request => { if (request.url().endsWith('/auth/household-login')) prompts++ })
+  await page.goto('/apps/workout/'); await panel(page)
+  const tab = await context.newPage(); await tab.goto('/apps/workout/'); await panel(tab)
+  for (const app of [page, tab]) {
+    await expect(app.getByRole('button', { name: 'Logout and pause sync' })).toBeVisible()
+    await expect(app.getByLabel('Password', { exact: true })).toHaveCount(0)
+    expect((await localState(app)).syncSettings).toEqual([expect.objectContaining({ enabled: false })])
+  }
+  const before = await localState(tab)
+  await page.getByRole('button', { name: 'Logout and pause sync' }).click()
+  await expect(tab.getByLabel('Password', { exact: true })).toBeVisible()
+  expect(await sibling.evaluate(async () => (await fetch('/api/v1/auth/session')).status)).toBe(401)
+  const after = await localState(tab)
+  expect(after.syncOutbox).toEqual(before.syncOutbox)
+  expect(after.plans).toEqual(before.plans)
+  expect(prompts).toBe(0)
 })
 
 test('pause in another tab retains a server-accepted in-flight write, survives restart, and resumes idempotently', async ({ browser }) => {
@@ -228,7 +266,7 @@ test('pause in another tab retains a server-accepted in-flight write, survives r
     release(); await b.waitForTimeout(3000)
     await a.reload(); await b.reload(); await b.waitForTimeout(3000)
     expect(laterRequests).toBe(0); expect((await localState(a)).syncOutbox).toEqual(before)
-    await panel(b); await b.getByRole('button', { name: 'Restore signed-in session' }).click()
+    await panel(b); await expect(b.getByRole('button', { name: 'Logout and pause sync' })).toBeVisible()
     const download = b.waitForEvent('download'); await b.getByRole('button', { name: 'Download local backup', exact: true }).click(); await download
     await b.getByRole('checkbox').check(); await b.getByRole('button', { name: 'Connect and download for review' }).click()
     await expect.poll(() => pending(b)).toBe(0)
@@ -258,7 +296,7 @@ test('a full browser-process restart preserves offline pending data through auth
     await page.getByRole('link', { name: 'Sign in again' }).click()
     await expect(page.locator('.sync-error')).toContainText('Authentication expired')
     expect((await localState(page)).syncOutbox).toEqual(before)
-    await page.getByLabel('Username', { exact: true }).fill('synthetic-owner'); await page.getByLabel('Password', { exact: true }).fill(password); await page.getByRole('button', { name: 'Sign in', exact: true }).click()
+    await page.getByLabel('Password', { exact: true }).fill(password); await page.getByRole('button', { name: 'Sign in', exact: true }).click()
     await expect.poll(() => pending(page)).toBe(0)
   } finally { await context.close() }
 })

@@ -29,11 +29,25 @@ function ConflictCopy({ title, value, labels, people }: { title: string; value: 
     </> : <p>No saved record in this copy.</p>}
   </div>
 }
+async function directory(engine: SyncEngine) {
+  const state = await engine.store.settings()
+  if (state.principalId && state.principalId !== engine.api.session?.principalId) throw new Error('Sign in as the owner already connected to this browser. Local records and pending edits are retained.')
+  const people = await engine.api.directory('people')
+  const spaces = await engine.api.directory('spaces')
+  await engine.store.cacheDirectory(people, spaces)
+}
+
 export function SyncPanel({ store }: { store: SyncStore }) {
   const engine = useMemo(() => new SyncEngine(store), [store])
   const [summary, setSummary] = useState<Awaited<ReturnType<SyncStore['summary']>> & { details?: Awaited<ReturnType<SyncStore['view']>> }>()
   const view = summary?.details
-  const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [signedIn, setSignedIn] = useState(false)
+  const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [auth, setAuth] = useState(engine.api.authState)
+  const signedIn = auth === 'signed-in'
+  const [sessionError, setSessionError] = useState('')
+  const checkSession = useRef<() => void>(() => {})
+  const authChannel = useRef<BroadcastChannel | null>(null)
+  const accountBusy = useRef(false)
+  const offlineRecovery = Boolean(document.querySelector('meta[name="workout-offline-recovery"]'))
   const [syncing, setSyncing] = useState(false)
   const [online, setOnline] = useState(navigator.onLine)
   const [runnerError, setRunnerError] = useState('')
@@ -50,7 +64,7 @@ export function SyncPanel({ store }: { store: SyncStore }) {
         const state = panel?.open
           ? await store.view().then(details => ({ details, settings: details.settings, pending: details.pending.length, conflicts: details.conflicts.length }))
           : await store.summary()
-        if (active && read === latestRead) { setSummary(state); setSignedIn(Boolean(engine.api.session)) }
+        if (active && read === latestRead) { setSummary(state); setAuth(engine.api.authState) }
       } catch (e) { if (active && read === latestRead) setRunnerError((e as Error).message) }
     }
     const connectivity = () => setOnline(navigator.onLine)
@@ -64,6 +78,69 @@ export function SyncPanel({ store }: { store: SyncStore }) {
     const channel = typeof BroadcastChannel === 'undefined' ? undefined : new BroadcastChannel('workout-storage'); if (channel) channel.onmessage = refresh
     return () => { active = false; stop(); panel?.removeEventListener('toggle', refresh); window.removeEventListener('workout-storage', refresh); window.removeEventListener('online', connectivity); window.removeEventListener('offline', connectivity); channel?.close() }
   }, [store, engine])
+  useEffect(() => {
+    if (offlineRecovery) return
+    let active = true
+    let checking = false
+    let recheck = false
+    let directoryToken: string | undefined
+    const channel = typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel('household-session')
+    authChannel.current = channel
+    const check = async () => {
+      if (!active || checking || accountBusy.current || !navigator.onLine) return
+      checking = true
+      try {
+        const session = await engine.api.restore()
+        if (!active || accountBusy.current) return
+        setAuth(engine.api.authState)
+        setSessionError('')
+        const state = await store.settings()
+        if (!active || accountBusy.current) return
+        if (state.enabled && state.signInRequired) await engine.run(true)
+        if (!state.enabled && directoryToken !== session.csrfToken) {
+          await directory(engine)
+          directoryToken = session.csrfToken
+        }
+      } catch (failure) {
+        if (!active || accountBusy.current) return
+        setAuth(engine.api.authState)
+        if (failure instanceof ApiError && failure.code === 'UNAUTHENTICATED') {
+          setSessionError('')
+          directoryToken = undefined
+        } else {
+          setSessionError('Could not check the sync service. Local workouts are available.')
+        }
+      } finally {
+        checking = false
+        if (recheck) { recheck = false; void check() }
+      }
+    }
+    const foreground = () => { if (document.visibilityState === 'visible') void check() }
+    checkSession.current = check
+    void check()
+    if (channel) channel.onmessage = () => {
+      if (checking) recheck = true
+      else void check()
+    }
+    window.addEventListener('online', check)
+    window.addEventListener('focus', foreground)
+    document.addEventListener('visibilitychange', foreground)
+    return () => {
+      active = false
+      channel?.close()
+      authChannel.current = null
+      window.removeEventListener('online', check)
+      window.removeEventListener('focus', foreground)
+      document.removeEventListener('visibilitychange', foreground)
+    }
+  }, [engine, store, offlineRecovery])
+  async function account(work: () => Promise<void>) {
+    accountBusy.current = true
+    try { await action(work) } finally {
+      accountBusy.current = false
+      if (engine.api.authState === 'unknown') checkSession.current()
+    }
+  }
   async function action(work: () => Promise<unknown>) {
     setBusy(true); setError('')
     try { await work() } catch (e) {
@@ -73,22 +150,19 @@ export function SyncPanel({ store }: { store: SyncStore }) {
         await store.patch({ signInRequired: true, error: e.message }, summary.settings.controlVersion ?? 0)
           .catch((failure: Error) => setRunnerError(failure.message))
       }
+      if (engine.api.authState === 'unknown' && navigator.onLine) checkSession.current()
     }
-    finally { setBusy(false); setSignedIn(Boolean(engine.api.session)) }
-  }
-  async function directory() {
-    const state = await store.settings()
-    if (state.principalId && state.principalId !== engine.api.session?.principalId) throw new Error('Sign in as the owner already connected to this browser. Local records and pending edits are retained.')
-    const people = await engine.api.directory('people'); const spaces = await engine.api.directory('spaces'); await store.cacheDirectory(people, spaces)
+    finally { setBusy(false); setAuth(engine.api.authState) }
   }
   const s = summary?.settings
-  const needsLogin = s?.signInRequired || (!s?.enabled && !signedIn)
+  const needsLogin = auth === 'signed-out'
   const hasConflict = Boolean(summary?.conflicts)
   const needsReview = s?.phase === 'initial' || s?.phase === 'recovery'
   const pending = summary?.pending ?? 0
   function headerStatus() {
     if (!online) return 'Offline'
-    if (runnerError) return 'Attention needed'
+    if (!offlineRecovery && auth === 'unknown' && !sessionError && !runnerError) return 'Checking session'
+    if (runnerError || sessionError) return 'Attention needed'
     if (syncing) return 'Syncing'
     if (needsLogin) return 'Sign in required'
     if (!s?.enabled || hasConflict || needsReview || s.error) return 'Attention needed'
@@ -107,7 +181,7 @@ export function SyncPanel({ store }: { store: SyncStore }) {
   return <><div className="sync-header" aria-label="Synchronization">
     <div className="sync-controls">
       <span className="sync-state" aria-live="polite" data-state={status}>{summary || runnerError ? status : 'Checking sync…'}</span>
-      <button type="button" disabled={!online || !s?.enabled || busy || syncing || Boolean(s.signInRequired) || Boolean(needsReview && s.stageComplete)}
+      <button type="button" disabled={!online || !s?.enabled || busy || syncing || needsLogin || Boolean(s.signInRequired) || Boolean(needsReview && s.stageComplete)}
         onClick={() => void action(() => engine.run(true))}>Sync</button>
     </div>
     {!online && <span>Edits stay on this device.{pending > 0 && ' Saved changes are waiting.'}</span>}
@@ -118,21 +192,44 @@ export function SyncPanel({ store }: { store: SyncStore }) {
     <div className="sync-content" aria-label="Synchronization settings">
       <p>Workouts remain usable offline. Connect to reconcile confirmed plans and saved sessions across devices. Recovery drafts are never uploaded. Conflicts may need review. Download and check a backup before connecting. Logout keeps local data and pending edits.</p>
       <p>{view?.plans.length ?? 0} plans · {view?.sessions.length ?? 0} saved sessions · {view?.conflicts.length ?? 0} conflicts</p>
-      <p id="sync-account" tabIndex={-1}>Space: {view?.spaces.find(x => x.id === s?.spaceId)?.name ?? 'Not selected'} · {signedIn && !s?.signInRequired ? 'Signed in' : 'Not signed in'}</p>
-      {(error || runnerError || s?.error) && <p className="sync-error" aria-live="polite">{error || runnerError || s?.error}</p>}
+      <p id="sync-account" tabIndex={-1}>Space: {view?.spaces.find(x => x.id === s?.spaceId)?.name ?? 'Not selected'} · {signedIn ? 'Signed in' : needsLogin ? 'Not signed in' : 'Session unavailable'}</p>
+      {(error || sessionError || runnerError || s?.error) && <p className="sync-error" aria-live="polite">{error || sessionError || runnerError || s?.error}</p>}
       <fieldset disabled={busy || !view}>
         <div className="actions"><button onClick={() => void action(async () => { const b = await store.export(localStorage.getItem('workout-companion-draft-v1')); download(b, `workout-backup-${b.id}.json`); setExportId(b.id); setVerified(false) })}>Download local backup</button><button onClick={() => void action(async () => setBackups(await store.backups()))}>Show preserved copies</button></div>
         {backups.map(b => <button key={b.id} onClick={() => download(b, `workout-preserved-${b.id}.json`)}>{b.reason} · {new Date(b.createdAt).toLocaleString()}</button>)}
-        {!signedIn || s?.signInRequired ? <form onSubmit={e => { e.preventDefault(); const form = e.currentTarget; const data = new FormData(form); const username = String(data.get('username')); const password = String(data.get('password')); form.reset(); void action(async () => { await engine.api.login(username, password); await directory(); await engine.run(true) }) }}>
-          <h3>Owner sign in</h3><label>Username<input name="username" autoComplete="username" required /></label><label>Password<input name="password" type="password" autoComplete="current-password" required /></label><button type="submit">Sign in</button><button type="button" onClick={() => void action(async () => { await engine.api.restore(); await directory(); await engine.run(true) })}>Restore signed-in session</button>
-        </form> : <div className="actions"><button onClick={() => void action(directory)}>Refresh People and Spaces</button><button onClick={() => void action(async () => { await store.patch({ enabled: false }); await engine.api.logout() })}>Logout and pause sync</button></div>}
+        {sessionError && online && <button type="button" onClick={() => checkSession.current()}>Retry session check</button>}
+        {online && needsLogin && <form onSubmit={event => {
+          event.preventDefault()
+          const form = event.currentTarget
+          const password = String(new FormData(form).get('password'))
+          form.reset()
+          void account(async () => {
+            await engine.api.login(password)
+            authChannel.current?.postMessage('changed')
+            setSessionError('')
+            await directory(engine)
+            await engine.run(true)
+          })
+        }}>
+          <h3>Household sign in</h3>
+          <label>Password<input name="password" type="password" autoComplete="current-password" required /></label>
+          <button type="submit">Sign in</button>
+        </form>}
+        {signedIn && <div className="actions">
+          <button onClick={() => void action(() => directory(engine))}>Refresh People and Spaces</button>
+          <button disabled={!online} onClick={() => void account(async () => {
+            await engine.pause()
+            await engine.api.logout()
+            authChannel.current?.postMessage('changed')
+          })}>Logout and pause sync</button>
+        </div>}
         {!s?.enabled && signedIn && <section>
           <label>Personal Space<select aria-label="Personal Space" value={s?.spaceId ?? spaceId} onChange={e => setSpaceId(e.target.value)} disabled={Boolean(s?.spaceId)}><option value="">Choose a personal Space</option>{view?.spaces.filter(x => x.kind === 'personal' && !x.archived).map(x => <option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
           {!s?.spaceId && <form onSubmit={e => { e.preventDefault(); const name = String(new FormData(e.currentTarget).get('name')).trim(); void action(async () => {
             const intent = await store.creation('spaceCreation', name)
             // A lost create response is recovered by its persisted UUID, never by a new create.
             const existing = (await engine.api.directory('spaces')).find(x => x.id === intent.id)
-            const created = existing ?? await engine.api.createSpace(intent.id, intent.name); await directory(); setSpaceId(created.id)
+            const created = existing ?? await engine.api.createSpace(intent.id, intent.name); await directory(engine); setSpaceId(created.id)
           }) }}><label>New personal Space name<input name="name" maxLength={100} required placeholder="My workouts" /></label><button>Create personal Space</button></form>}
           <label className="check"><input type="checkbox" checked={verified} onChange={e => setVerified(e.target.checked)} />I downloaded and checked my backup. I consent to reconcile these confirmed records in this personal Space.</label>
           <button className="primary" disabled={!exportId || !verified || !(s?.spaceId ?? spaceId)} onClick={() => void action(async () => { const space = view!.spaces.find(x => x.id === (s?.spaceId ?? spaceId)); if (!space) throw new Error('Refresh and select a Space.'); await store.begin(space, engine.api.session!.principalId, exportId); await engine.run(true) })}>Connect and download for review</button>
@@ -157,7 +254,7 @@ export function SyncPanel({ store }: { store: SyncStore }) {
           </div>
         </section>)}</div>
         <section><h3>People and record labels</h3><p>A Person is a label, not a login. Creating People requires an online signed-in connection. Existing associations, including multiple roles, are retained.</p>
-          {signedIn && <form onSubmit={e => { e.preventDefault(); const form = e.currentTarget; const name = String(new FormData(form).get('person')).trim(); void action(async () => { const intent = await store.creation('personCreation', name); const existing = (await engine.api.directory('people')).find(x => x.id === intent.id); if (!existing) await engine.api.createPerson(intent.id, intent.name); await directory(); await store.finishPersonCreation(intent.id); form.reset() }) }}><label>Person name<input name="person" required maxLength={100} /></label><button disabled={navigator.onLine === false}>Create Person (online)</button></form>}
+          {signedIn && <form onSubmit={e => { e.preventDefault(); const form = e.currentTarget; const name = String(new FormData(form).get('person')).trim(); void action(async () => { const intent = await store.creation('personCreation', name); const existing = (await engine.api.directory('people')).find(x => x.id === intent.id); if (!existing) await engine.api.createPerson(intent.id, intent.name); await directory(engine); await store.finishPersonCreation(intent.id); form.reset() }) }}><label>Person name<input name="person" required maxLength={100} /></label><button disabled={navigator.onLine === false}>Create Person (online)</button></form>}
           <ul>{view?.people.map(p => <li key={p.id}>{p.displayName}{p.archived ? ' (archived)' : ''}</li>)}</ul>
           <label>Saved record<select aria-label="Saved record" value={selected} onChange={e => setSelected(e.target.value)}><option value="">Choose a plan or saved session</option>{view?.plans.map(p => <option key={`plan:${p.id}`} value={`plan:${p.id}`}>Plan · {'name' in p ? p.name : p.id}</option>)}{view?.sessions.map(p => <option key={`session:${p.id}`} value={`session:${p.id}`}>Session · {'date' in p ? p.date : ''} · {p.id.slice(0, 8)}</option>)}</select></label>
           {target && <><ul>{people.map((p, i) => <li key={`${p.personId}:${p.role}`}>{view?.people.find(x => x.id === p.personId)?.displayName ?? p.personId} · {p.role} <button onClick={() => tags(people.filter((_, index) => index !== i))}>Remove association</button></li>)}</ul><label>Add Person as subject<select aria-label="Add Person as subject" value="" onChange={e => { if (!people.some(p => p.personId === e.target.value && p.role === 'subject')) tags([...people, { personId: e.target.value, role: 'subject' }]) }}><option value="">Choose Person</option>{view?.people.filter(p => !p.archived).map(p => <option value={p.id} key={p.id}>{p.displayName}</option>)}</select></label><button onClick={() => { if (window.confirm('Delete this saved record locally and queue its deletion for the connected Space? A preserved copy remains exportable.')) void action(async () => { await store.delete(target.kind, target.value.id); setSelected('') }) }}>Delete selected record…</button></>}

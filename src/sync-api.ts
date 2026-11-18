@@ -4,18 +4,32 @@ import { commonSchema, exchangeSchema, personSchema, spaceSchema, type ExchangeR
 const sessionSchema = z.object({ principalId: z.uuid(), csrfToken: z.string().min(1), expiresAt: z.number().int() })
 export class ApiError extends Error {
   status: number; code: string; retryAfter: number
-  constructor(status: number, code: string, retryAfter = 0) { super(code === 'INVALID_CREDENTIALS' ? 'Incorrect username or password.' : code === 'UNAUTHENTICATED' ? 'Authentication expired. Sign in again; pending changes are safe.' : `Sync service: ${code}`); this.status = status; this.code = code; this.retryAfter = retryAfter }
+  constructor(status: number, code: string, retryAfter = 0) { super(code === 'INVALID_CREDENTIALS' ? 'Incorrect household password.' : code === 'UNAUTHENTICATED' ? 'Authentication expired. Sign in again; pending changes are safe.' : `Sync service: ${code}`); this.status = status; this.code = code; this.retryAfter = retryAfter }
 }
 export class SyncApi {
   session: z.infer<typeof sessionSchema> | null = null
-  private controllers = new Set<AbortController>()
+  private passwordRequired = false
+  private restoring?: Promise<z.infer<typeof sessionSchema>>
+  get authState(): 'signed-in' | 'signed-out' | 'unknown' {
+    if (this.session) return 'signed-in'
+    return this.passwordRequired ? 'signed-out' : 'unknown'
+  }
+  private controllers = new Map<AbortController, string>()
   private readonly request: typeof fetch
   constructor(request: typeof fetch = (...args) => fetch(...args)) { this.request = request }
-  abort() { this.controllers.forEach(c => c.abort()) }
-  cancel() { this.abort(); this.session = null }
+  abortSync() {
+    // A pause notification can arrive after logout has started in this tab.
+    for (const [controller, path] of this.controllers) if (!path.startsWith('/auth/')) controller.abort()
+  }
+  cancel() {
+    this.restoring = undefined
+    for (const controller of this.controllers.keys()) controller.abort()
+    this.session = null
+  }
   async call(path: string, body?: unknown): Promise<unknown> {
     if (!path.startsWith('/') || path.startsWith('//')) throw new Error('Invalid API path')
-    const controller = new AbortController(); this.controllers.add(controller)
+    const sentSession = this.session
+    const controller = new AbortController(); this.controllers.set(controller, path)
     const timer = setTimeout(() => controller.abort(), 20_000)
     try {
       const response = await this.request(`/api/v1${path}`, {
@@ -25,16 +39,43 @@ export class SyncApi {
       })
       if (!response.ok) {
         const error = await response.json().catch(() => null) as { error?: { code?: string } } | null
-        if (response.status === 401 || error?.error?.code === 'CSRF_REQUIRED') this.session = null
+        controller.signal.throwIfAborted()
+        if (this.session === sentSession && (response.status === 401 || error?.error?.code === 'CSRF_REQUIRED')) {
+          this.session = null
+          this.passwordRequired = response.status === 401
+        }
         const retry = response.headers.get('Retry-After')
         throw new ApiError(response.status, error?.error?.code ?? `HTTP_${response.status}`, retry ? Math.max(0, Number(retry) * 1000 || Date.parse(retry) - Date.now()) : 0)
       }
-      return response.status === 204 ? undefined : response.json()
+      const value = response.status === 204 ? undefined : await response.json()
+      controller.signal.throwIfAborted()
+      return value
     } finally { clearTimeout(timer); this.controllers.delete(controller) }
   }
-  async login(username: string, password: string) { this.session = sessionSchema.parse(await this.call('/auth/login', { username, password })); return this.session }
-  async restore() { this.session = sessionSchema.parse(await this.call('/auth/session')); return this.session }
-  async logout() { try { if (!this.session) await this.restore(); await this.call('/auth/logout', {}) } finally { this.cancel() } }
+  async login(password: string) {
+    this.session = sessionSchema.parse(await this.call('/auth/household-login', { password }))
+    this.restoring = undefined
+    this.passwordRequired = false
+    return this.session
+  }
+  restore() {
+    if (!this.restoring) {
+      const pending = this.call('/auth/session').then(value => {
+        if (this.restoring !== pending) throw new DOMException('Session check superseded', 'AbortError')
+        this.session = sessionSchema.parse(value)
+        this.passwordRequired = false
+        return this.session
+      }).finally(() => { if (this.restoring === pending) this.restoring = undefined })
+      this.restoring = pending
+    }
+    return this.restoring
+  }
+  async logout() {
+    if (!this.session) await this.restore()
+    await this.call('/auth/logout', {})
+    this.cancel()
+    this.passwordRequired = true
+  }
   async exchange(request: ExchangeRequest) { return exchangeSchema.parse(await this.call('/apps/workout/exchange', request)) }
   async common(cursor: string | null) { return commonSchema.parse(await this.call('/common/changes', { protocolVersion: 1, cursor, limit: 50 })) }
   async directory(kind: 'people'): Promise<Person[]>
