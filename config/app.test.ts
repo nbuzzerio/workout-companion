@@ -1,12 +1,12 @@
 import { expect, test } from 'vitest'
 import { appConfig, appConfigSchema } from './app.ts'
 
-test('Workout keeps its existing database identity and disables future sync', () => {
+test('Workout keeps its database identity and never enables sync in build configuration', () => {
   expect(appConfig.id).toBe('workout')
   expect(appConfig.basePath).toBe('/apps/workout/')
   expect(appConfig.databaseName).toBe('workout-companion')
   expect(appConfig.sync?.enabled).toBe(false)
-  expect(appConfig.sync?.endpoint).toBe('https://www.nickbuzzerio.com/api/v1/apps/workout/exchange')
+  expect(appConfig.sync?.endpoint).toBeUndefined()
 })
 
 test('invalid identities, mismatched paths and sync enablement fail closed', () => {

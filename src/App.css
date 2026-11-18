@@ -59,3 +59,19 @@ fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
   .set label { font-size: .7rem; }
   .set input { padding: 10px 8px; }
 }
+.sync-panel { margin: 16px 0; border: 1px solid #c5d2c8; border-radius: 12px; background: #f4f7f1; }
+.sync-panel summary { padding: 14px; cursor: pointer; font-weight: 650; }
+.sync-content { padding: 0 16px 16px; font-size: .85rem; }
+.sync-content section, .sync-content form { margin-top: 18px; border-top: 1px solid #ced9d0; padding-top: 14px; }
+.sync-content form { max-width: 440px; }
+.sync-content button { margin: 6px 4px 6px 0; }
+.sync-content select { width: 100%; min-height: 44px; margin: 5px 0 12px; font: inherit; padding: 8px; border: 1px solid #94a59a; border-radius: 8px; background: white; color: #203d30; }
+.sync-content .check { display: flex; gap: 10px; align-items: center; margin: 16px 0; }
+.sync-content .check input { width: 24px; flex-shrink: 0; }
+.sync-conflict { overflow-wrap: anywhere; }
+.sync-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.sync-comparison pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 380px; overflow: auto; font-size: .75rem; }
+.sync-error { color: #862d25; padding: 12px; background: #fff0eb; }
+@media (max-width: 600px) { .sync-comparison { grid-template-columns: minmax(0, 1fr); } }
+.plan-picker { margin-top: 16px; }
+.plan-picker select { display: block; width: 100%; padding: 12px; min-height: 44px; font: inherit; border-radius: 8px; border: 1px solid #94a59a; color: #203d30; background: white; }

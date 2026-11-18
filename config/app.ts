@@ -33,5 +33,7 @@ export const appConfig = appConfigSchema.parse({
   displayName: 'Workout Companion',
   basePath: '/apps/workout/',
   databaseName: 'workout-companion',
-  sync: { enabled: false, endpoint: 'https://www.nickbuzzerio.com/api/v1/apps/workout/exchange' },
+  // Build-time configuration cannot opt users in. Consent lives in IndexedDB.
+  // Requests always use same-origin /api/v1; this optional URL is legacy metadata.
+  sync: { enabled: false },
 });

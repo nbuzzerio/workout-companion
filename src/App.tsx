@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { SessionStore } from './storage'
-import { createSession, demoPlan, formatSet, updateSet, validateSession, type Session, type Performance } from './workouts'
+import { createSession, demoPlan, formatSet, updateSet, validateSession, type Session, type Performance, type Plan } from './workouts'
 import './App.css'
 import { PwaStatus } from './PwaStatus'
+import { SyncPanel } from './SyncPanel'
+import { SyncStore } from './sync-store'
 
 const defaultStore = new SessionStore()
 const draftKey = 'workout-companion-draft-v1'
@@ -20,17 +22,35 @@ function readRecovery() {
 }
 
 function App({ store = defaultStore }: { store?: SessionStore }) {
+  const syncStore = useMemo(() => new SyncStore(store.open), [store])
   const [recovery, setRecovery] = useState(readRecovery)
   const [machineText, setMachineText] = useState<Record<string, string>>({})
   const [date, setDate] = useState(() => recovery.draft?.date ?? today())
   const [day, setDay] = useState('Mon')
   const [records, setRecords] = useState<Session[]>([])
+  const [plans, setPlans] = useState<Plan[]>([demoPlan])
+  const [planId, setPlanId] = useState(demoPlan.id)
   const [session, setSession] = useState<Session | undefined>(recovery.draft)
   const [message, setMessage] = useState(recovery.draft ? 'Recovered draft — save to confirm it in workout history.' : '')
   const [error, setError] = useState(recovery.error)
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(true)
   const [dirty, setDirty] = useState(Boolean(recovery.draft))
+  useEffect(() => {
+    let active = true
+    const refreshSaved = () => { void store.list().then(rows => {
+      if (!active) return
+      setRecords(rows)
+      void store.plans().then(p => { if (active) setPlans(p) }).catch(() => {})
+      // Keep unsaved recovery state in memory and localStorage. Clean views may
+      // follow remote changes; stale drafts still face local revision checks.
+      if (!dirty && !busy) setSession(current => current ? rows.find(row => row.id === current.id) : current)
+    }).catch(() => {}) }
+    window.addEventListener('workout-storage', refreshSaved)
+    const channel = typeof BroadcastChannel === 'undefined' ? undefined : new BroadcastChannel('workout-storage')
+    if (channel) channel.onmessage = refreshSaved
+    return () => { active = false; channel?.close(); window.removeEventListener('workout-storage', refreshSaved) }
+  }, [store, dirty, busy])
   useEffect(() => {
     if (!dirty) return
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
@@ -40,7 +60,7 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
   useEffect(() => {
     let active = true
     void (async () => {
-      try { await store.ensurePlan(demoPlan); const rows = await store.list(); if (active) setRecords(rows) }
+      try { await store.ensurePlan(demoPlan); const rows = await store.list(); const savedPlans = await store.plans(); if (active) { setRecords(rows); setPlans(savedPlans) } }
       catch (e) { if (active) setError(`Storage unavailable: ${(e as Error).message} Nothing was saved to history. Retry when ready.`) }
       finally { if (active) setLoading(false) }
     })()
@@ -59,7 +79,7 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
   async function refresh() {
     setBusy(true)
     try {
-      await store.ensurePlan(demoPlan); setRecords(await store.list())
+      await store.ensurePlan(demoPlan); setRecords(await store.list()); setPlans(await store.plans())
       const next = readRecovery()
       setRecovery(next); setError(next.error)
       if (next.draft && !session) {
@@ -85,20 +105,24 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
     finally { setBusy(false) }
   }
   const previous = session && records.filter(row => row.planId === session.planId && row.demo === session.demo && row.date < session.date && row.status === 'completed').sort((a, b) => b.date.localeCompare(a.date))[0]
-  const active = records.find(row => row.planId === demoPlan.id && row.date === date && row.status === 'active')
-  const exercises = session?.exercises ?? demoPlan.exercises
+  const plan = plans.find(p => p.id === (session?.planId ?? planId)) ?? demoPlan
+  const availableDay = days[(plan.weekday + 6) % 7]
+  const active = records.find(row => row.planId === plan.id && row.date === date && row.status === 'active')
+  const exercises = session?.exercises ?? plan.exercises
   const finished = session?.status === 'completed'
 
   return <main className="runner">
     <header><p className="eyebrow">WORKOUT COMPANION / LOCAL TRAINING LOG</p><h1>One set at a time.</h1><p>Your plan, your last lift, your next set.</p></header>
     <PwaStatus canReload={!dirty && !busy && !loading && !recovery.error} />
-    <aside className="demo"><strong>DEMO workspace</strong><span>Sample plan only. These practice sessions are not imported workout history. Monday is the only available plan; you can practice it on any date.</span></aside>
-    <nav className="week" aria-label="Weekly day selector">{days.map(d => <button key={d} aria-pressed={day === d} onClick={() => setDay(d)}>{d}<small>{d === 'Mon' ? 'Strength' : 'No plan'}</small></button>)}</nav>
+    <SyncPanel store={syncStore} />
+    {plan.id === demoPlan.id && <aside className="demo"><strong>DEMO workspace</strong><span>Sample plan only. These practice sessions are not imported workout history. Monday is the only available sample plan; you can practice it on any date.</span></aside>}
+    {plans.length > 1 && <label className="plan-picker">Saved plan<select value={plan.id} disabled={dirty || busy} onChange={e => { setPlanId(e.target.value); setSession(undefined); setDay(days[((plans.find(p => p.id === e.target.value)?.weekday ?? 1) + 6) % 7]) }}>{plans.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>}
+    <nav className="week" aria-label="Weekly day selector">{days.map(d => <button key={d} aria-pressed={day === d} onClick={() => setDay(d)}>{d}<small>{d === availableDay ? 'Strength' : 'No plan'}</small></button>)}</nav>
     <div className="workspace">
       <section aria-label="Workout plan">
-        <div className="plan-heading"><div><p className="eyebrow">{day === 'Mon' ? 'MONDAY / DEMO PLAN' : `${day.toUpperCase()} / UNSCHEDULED`}</p><h2>{day === 'Mon' ? 'Strength, steadily.' : 'No workout planned'}</h2></div><label>Workout date<input type="date" value={date} disabled={dirty || busy} onChange={e => { setDate(e.target.value); setSession(undefined); setMessage('') }} /></label></div>
-        {day !== 'Mon' ? <p className="empty">There’s no plan for this day yet. Your Monday session stays intact when you switch days.</p> : <>
-          {!session && <button className="primary" disabled={!date || busy || loading || Boolean(recovery.error)} onClick={() => { if (active) { setSession(structuredClone(active)); setMessage('Reopened saved session.') } else { try { keepDraft(createSession(demoPlan, date)) } catch (e) { setError((e as Error).message) } } }}>{active ? 'Resume Workout' : 'Start Workout'}</button>}
+        <div className="plan-heading"><div><p className="eyebrow">{day === availableDay ? (plan.id === demoPlan.id ? 'MONDAY / DEMO PLAN' : 'SAVED PLAN') : `${day.toUpperCase()} / UNSCHEDULED`}</p><h2>{day === availableDay ? (plan.id === demoPlan.id ? 'Strength, steadily.' : plan.name) : 'No workout planned'}</h2></div><label>Workout date<input type="date" value={date} disabled={dirty || busy} onChange={e => { setDate(e.target.value); setSession(undefined); setMessage('') }} /></label></div>
+        {day !== availableDay ? <p className="empty">There’s no plan for this day yet. Your Monday session stays intact when you switch days.</p> : <>
+          {!session && <button className="primary" disabled={!date || busy || loading || Boolean(recovery.error)} onClick={() => { if (active) { setSession(structuredClone(active)); setMessage('Reopened saved session.') } else { try { keepDraft(createSession(plan, date)) } catch (e) { setError((e as Error).message) } } }}>{active ? 'Resume Workout' : 'Start Workout'}</button>}
           <p className="measurement-note">Dumbbell loads are pounds as logged. The sample source does not specify per-hand or combined weight. Machine settings (P9, P10…) are positions, not pounds.</p>
           {session && <section className="session-heading" aria-label="Current session"><h3>{finished ? 'Workout finished' : 'Current workout'} · {session.date}</h3><p>{finished ? `${exercises.length} exercises · ${exercises.reduce((sum, e) => sum + e.sets.length, 0)} sets recorded. Saved on this device. Completed history is read-only.` : 'Edit each set to record what you actually did. Save when you’re ready.'}</p></section>}
           {exercises.map((exercise, number) => <article className="exercise" key={exercise.id}>
@@ -123,9 +147,9 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
           }}>Discard unsaved changes</button>}</div>}
         </>}
       </section>
-      <aside className="history" aria-label="Saved sessions"><h2>On this device</h2><p>Saved workouts · {date}</p>{records.filter(s => s.date === date).length === 0 && <p>No saved sessions for this date.</p>}{records.filter(s => s.date === date).map(row => <button key={row.id} disabled={busy || dirty} onClick={() => { setSession(structuredClone(row)); setDay('Mon'); setMessage('Reopened saved session.'); setError('') }}>{row.demo ? 'DEMO ' : ''}{row.date} · {row.status}<small>Open saved workout · {row.id.slice(0, 8)}</small></button>)}<p>Save your draft before changing dates or opening another workout.</p><button disabled={busy} onClick={() => void refresh()}>Retry storage / refresh history</button></aside>
+      <aside className="history" aria-label="Saved sessions"><h2>On this device</h2><p>Saved workouts · {date}</p>{records.filter(s => s.date === date).length === 0 && <p>No saved sessions for this date.</p>}{records.filter(s => s.date === date).map(row => <button key={row.id} disabled={busy || dirty} onClick={() => { setSession(structuredClone(row)); setDay(days[((plans.find(p => p.id === row.planId)?.weekday ?? 1) + 6) % 7]); setMessage('Reopened saved session.'); setError('') }}>{row.demo ? 'DEMO ' : ''}{row.date} · {row.status}<small>Open saved workout · {row.id.slice(0, 8)}</small></button>)}<p>Save your draft before changing dates or opening another workout.</p><button disabled={busy} onClick={() => void refresh()}>Retry storage / refresh history</button></aside>
     </div>
-    <footer className="save-status"><p role="status" aria-live="polite">{message || 'Ready when you are. Workouts are stored only in this browser.'}</p>{error && <p role="alert">{error}</p>}</footer>
+    <footer className="save-status"><p role="status" aria-live="polite">{message || 'Ready when you are. Workouts save on this device; optional synchronization is in Settings.'}</p>{error && <p role="alert">{error}</p>}</footer>
   </main>
 }
 export default App

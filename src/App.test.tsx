@@ -3,11 +3,13 @@ import { afterEach, expect, test, vi } from 'vitest'
 import App from './App'
 import { SessionStore } from './storage'
 import { type Session } from './workouts'
+import { demoPlan } from './workouts'
 afterEach(() => { cleanup(); localStorage.clear(); vi.restoreAllMocks() })
 function memoryStore() {
   const store = new SessionStore()
   const rows: Session[] = []
   vi.spyOn(store, 'ensurePlan').mockResolvedValue(undefined)
+  vi.spyOn(store, 'plans').mockResolvedValue([demoPlan])
   vi.spyOn(store, 'list').mockImplementation(async () => structuredClone(rows))
   vi.spyOn(store, 'save').mockImplementation(async s => { const saved = { ...structuredClone(s), revision: s.revision + 1 }; const i = rows.findIndex(r => r.id === s.id); if (i < 0) rows.push(saved); else rows[i] = saved; return saved })
   return store

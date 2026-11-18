@@ -72,8 +72,8 @@ test('pre-integration v1 stores and complete records reopen without a migration 
   await store.ensurePlan(demoPlan)
   expect(await store.reopen(session.id)).toEqual(session)
   const db = await openDatabase(name)
-  expect(db.version).toBe(1)
-  expect(Array.from(db.objectStoreNames)).toEqual(['plans', 'sessions'])
+  expect(db.version).toBe(2)
+  expect(Array.from(db.objectStoreNames)).toEqual(expect.arrayContaining(['plans', 'sessions', 'syncOutbox', 'syncSettings']))
   const retained = await new Promise((resolve, reject) => {
     const request = db.transaction('plans').objectStore('plans').get(plan.id)
     request.onsuccess = () => resolve(request.result)

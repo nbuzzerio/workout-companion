@@ -103,7 +103,7 @@ test('pre-integration native IndexedDB records and metadata remain byte-for-byte
     db.close()
     return result
   })
-  expect(records).toEqual({ version: 1, stores: ['plans', 'sessions'], plans: [plan], sessions: [session] })
+  expect(records).toEqual({ version: 2, stores: expect.arrayContaining(['plans', 'sessions', 'syncOutbox', 'syncSettings']), plans: [plan], sessions: [session] })
 })
 
 test('the existing recovery key survives reload without becoming saved history', async ({ page }) => {

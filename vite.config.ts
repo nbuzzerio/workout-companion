@@ -6,6 +6,11 @@ import { appConfig } from './config/app.ts'
 // https://vite.dev/config/
 export default defineConfig({
   base: appConfig.basePath,
+  // Loopback-only development service. Never proxy local credentials to production.
+  server: {
+    proxy: { '/api/v1': { target: 'http://127.0.0.1:4317', changeOrigin: false } },
+    watch: { ignored: ['**/playwright-report/**', '**/test-results/**', '**/test-results-sync/**', '**/.dev/**'] },
+  },
   plugins: [react(), VitePWA({
     registerType: 'prompt',
     injectRegister: false,
