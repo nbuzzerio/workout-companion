@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { Plan, Session } from './workouts'
+import { exerciseFeedbackSchema, guidanceSchema, performanceSchema, standardPerformanceSchema, validGuidanceProgress, weekdaySchema, type Plan, type Session } from './workouts.ts'
 
 export type Kind = 'plan' | 'session'
 export type Value = Plan | Session
@@ -9,14 +9,12 @@ export type Operation = { operationId: string; kind: Kind; recordId: string; bas
 const version = z.string().regex(/^[1-9][0-9]{0,14}$/)
 const id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/)
 const numeric = z.number().finite().nonnegative()
-const performance = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('weight'), pounds: numeric, reps: numeric.int() }).passthrough(),
-  z.object({ kind: z.literal('machine'), position: z.string().regex(/^P\d+$/), reps: numeric.int() }).passthrough(),
-  z.object({ kind: z.literal('hold'), seconds: numeric }).passthrough(),
-])
-const exercises = z.array(z.object({ id, name: z.string().min(1), sets: z.array(performance).max(100), musclesSource: z.string().optional() }).passthrough()).max(200)
-export const planSchema = z.object({ version: z.literal(1), id, name: z.string().min(1), weekday: z.number().int().min(0).max(6), demo: z.boolean(), exercises }).passthrough()
-export const sessionSchema = z.object({ version: z.literal(1), id, planId: id, date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(v => { const d = new Date(`${v}T12:00:00Z`); return Number.isFinite(d.getTime()) && d.toISOString().slice(0, 10) === v }), demo: z.boolean(), revision: numeric.int().safe(), status: z.enum(['active', 'completed']), exercises }).passthrough()
+const exercise = z.object({
+  id, name: z.string().min(1), sets: z.array(standardPerformanceSchema).max(100),
+  prescription: z.array(performanceSchema).max(100).optional(), musclesSource: z.string().optional(),
+}).passthrough()
+export const planSchema = z.object({ version: z.literal(1), id, name: z.string().min(1), weekday: weekdaySchema, demo: z.boolean(), exercises: z.array(exercise).max(200) }).passthrough()
+export const sessionSchema = z.object({ version: z.literal(1), id, planId: id, planWeekday: weekdaySchema.optional(), date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(v => { const d = new Date(`${v}T12:00:00Z`); return Number.isFinite(d.getTime()) && d.toISOString().slice(0, 10) === v }), demo: z.boolean(), revision: numeric.int().safe(), status: z.enum(['active', 'completed']), exercises: z.array(exercise.extend({ feedback: exerciseFeedbackSchema.optional() })).max(200), guidance: guidanceSchema.optional() }).passthrough().refine(validGuidanceProgress)
 export const associationsSchema = z.array(z.object({ personId: z.uuid(), role: z.string().regex(/^[a-z][a-z0-9-]{0,47}$/) }).strict()).max(64)
 export const snapshotSchema = z.object({ kind: z.enum(['plan', 'session']), recordId: id, schemaVersion: z.literal(1), value: z.unknown(), people: associationsSchema, deleted: z.boolean(), serverVersion: version, createdAt: z.string(), updatedAt: z.string(), updatedBy: z.uuid(), deviceId: z.uuid() }).strict().superRefine((s, ctx) => {
   if (s.deleted ? s.value !== null : !(s.kind === 'plan' ? planSchema : sessionSchema).safeParse(s.value).success || (s.value as Value)?.id !== s.recordId) ctx.addIssue({ code: 'custom', message: 'Unsupported downloaded record; local data retained.' })

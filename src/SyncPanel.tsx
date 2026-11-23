@@ -3,7 +3,8 @@ import { SyncEngine } from './sync-engine'
 import { ApiError } from './sync-api'
 import { SyncStore, type Backup, type Conflict } from './sync-store'
 import { planSchema, same, sessionSchema, type Association, type Kind, type Person, type Value } from './sync'
-import { formatSet } from './workouts'
+import { formatSet, plannedSets } from './workouts'
+import { setActual } from './guided-workout'
 
 function download(value: unknown, name: string) {
   const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' }))
@@ -24,7 +25,16 @@ function ConflictCopy({ title, value, labels, people }: { title: string; value: 
   return <div><h4>{title}</h4>
     {value ? <>
       <p>{'date' in value ? `${value.date} · ${value.status}` : value.name}</p>
-      <ul>{value.exercises.map((exercise, index) => <li key={index}>{exercise.name} · {exercise.sets.map(formatSet).join(' | ')}</li>)}</ul>
+      <ul>{value.exercises.map((exercise, index) => {
+        const guided = 'date' in value ? value.guidance?.sets[index] : undefined
+        const sets = guided ? guided.flatMap(step => {
+          const actual = setActual(step)
+          if (actual) return [formatSet(actual)]
+          if (step.outcome?.status === 'skipped') return [step.outcome.reason ? `Skipped (${step.outcome.reason})` : 'Skipped']
+          return []
+        }) : ('date' in value ? exercise.sets : plannedSets(exercise)).map(formatSet)
+        return <li key={index}>{exercise.name} · {sets.join(' | ') || 'No sets recorded'}</li>
+      })}</ul>
       {labels.map(label => <p key={label.personId + label.role}>{people.find(p => p.id === label.personId)?.displayName ?? 'Unknown person'} · {label.role}</p>)}
     </> : <p>No saved record in this copy.</p>}
   </div>

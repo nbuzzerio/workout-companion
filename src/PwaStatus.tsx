@@ -1,7 +1,7 @@
 import { useRegisterSW } from 'virtual:pwa-register/react'
 
 // Applying a waiting worker reloads the page. The runner owns the save guard,
-// including partial machine-position input that is not a valid recovery draft.
+// including partially entered actuals that are still part of a local draft.
 export function PwaStatus({ canReload }: { canReload: boolean }) {
   const { needRefresh: [needRefresh], offlineReady: [offlineReady], updateServiceWorker } = useRegisterSW()
   if (needRefresh) return <aside className="demo" aria-label="App update">

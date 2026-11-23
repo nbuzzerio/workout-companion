@@ -46,6 +46,24 @@ an existing build. The output is exclusively `dist/`.
 See [Node-only migration and verification](docs/NODE_ONLY_MIGRATION.md) for the
 coverage comparison, environment proof and Studio follow-up.
 
+## Human QA demo · Question 2
+
+Use the local preview in a private browser window and select **DEMO Monday**.
+
+1. Open **Edit Day's Workout**. Try renaming or reordering an exercise and
+   changing a set target. Select **Save workout plan** to carry those targets into
+   the next workout, or **Cancel** to return to the day with the existing plan.
+2. Select **Start Workout**, then expand **Exercise feedback** below the set
+   controls. Pick an RIR and mobility rating and enter different text in
+   **Pain/Notes** and **Coach Notes**. Reload and expand **Exercise feedback**
+   again to check that all four entries were kept for that exercise.
+
+For both screens with sample values, run `pnpm build` and
+`pnpm test:e2e --grep "Question 2"`. The test opens both views at phone width
+in an isolated browser context and writes `01-day-plan-editor.png` and
+`02-guided-exercise-feedback.png` under `test-results/`. Both images are also
+attached to Question 2 in the Playwright HTML report.
+
 ## Offline and local data
 
 IndexedDB **workout-companion**, version **2**, holds confirmed plans, sessions

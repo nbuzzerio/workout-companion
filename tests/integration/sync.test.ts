@@ -7,6 +7,7 @@ import { SyncEngine } from '../../src/sync-engine'
 import { SyncApi } from '../../src/sync-api'
 import { exchangeSchema, type Operation, type Space } from '../../src/sync'
 import { createSession, demoPlan } from '../../src/workouts'
+import { recordSet, skipSets, startGuidedWorkout } from '../../src/guided-workout'
 let f: Fixture, space: Space
 beforeEach(async () => { f = await fixture(); space = f.space() })
 afterEach(async () => { await f.close() })
@@ -67,6 +68,25 @@ test('two independent databases sync confirmed history, offline edits, People as
   await b.store.resolve(c.id, c.generation, 'local'); await b.engine.run(true); await a.engine.run(true)
   expect((await a.local.list())[0].exercises[0].sets[0]).toMatchObject({ pounds: 202 })
   expect((await b.store.view()).pending).toEqual([])
+})
+
+test('guided targets, richer actuals, and skips round-trip through the version 1 service', async () => {
+  const a = await device(), b = await device()
+  const plan = { ...demoPlan, id: 'synthetic-guided', exercises: [
+    { id: 'band', name: 'Band row', sets: [], prescription: [{ kind: 'band' as const, resistance: 'medium', reps: 10, perSide: true }] },
+    demoPlan.exercises[1],
+  ] }
+  await a.local.ensurePlan(plan)
+  const draft = startGuidedWorkout(plan, '2026-11-09')
+  const bandLogged = recordSet(draft, { kind: 'band', resistance: 'light', reps: 8, perSide: true }, true)
+  const skipped = skipSets(bandLogged, 'set', 'Machine occupied')
+  const saved = await a.local.complete(recordSet(skipped, { kind: 'machine', position: 'P12', reps: 10 }, true))
+  await connect(a)
+  await connect(b)
+  expect(await b.local.plans()).toEqual([plan])
+  expect(await b.local.list()).toEqual([saved])
+  expect((await a.store.summary()).pending).toBe(0)
+  expect(saved.exercises.map(exercise => exercise.sets)).toEqual([[], [{ kind: 'machine', position: 'P12', reps: 10 }]])
 })
 
 test('lost HTTP response replays identical immutable operation and server applies only once', async () => {

@@ -1,157 +1,334 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { SessionStore } from './storage'
-import { createSession, demoPlan, formatSet, updateSet, validateSession, type Session, type Performance, type Plan } from './workouts'
-import './App.css'
+import { demoPlan, formatSet, plannedSets, validateSession, type Exercise, type Session, type Plan } from './workouts'
+import { draftKey, getGuide, guideSteps, readActual, recordSet, recoverLegacyDraft, setActual, startGuidedWorkout, type ResultCorrection, type WorkoutDraft } from './guided-workout'
+import { GuidedWorkout } from './GuidedWorkout'
+import { DayWorkoutEditor } from './DayWorkoutEditor'
+import { RecordedResultsEditor } from './RecordedResultsEditor'
 import { PwaStatus } from './PwaStatus'
 import { SyncPanel } from './SyncPanel'
 import { SyncStore } from './sync-store'
+import { same } from './sync'
+import './App.css'
 
 const defaultStore = new SessionStore()
-const draftKey = 'workout-companion-draft-v1'
 const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` }
+function dayFor(weekday = 1) {
+  return days[(weekday + 6) % 7]
+}
 
-function readRecovery() {
-    try {
-      const raw = localStorage.getItem(draftKey)
-      if (!raw) return { draft: undefined, error: '' }
-      const draft = JSON.parse(raw) as Session
-      validateSession(draft)
-      return { draft, error: '' }
-    } catch { return { draft: undefined, error: 'Draft recovery unavailable. Existing draft data was retained; keep this page open until you save.' } }
+function exportDay(session: Session, plan?: Plan) {
+  // Legacy sessions have no scheduled-day snapshot. Use the linked plan if available.
+  return dayFor(session.planWeekday ?? plan?.weekday ?? new Date(`${session.date}T12:00:00Z`).getUTCDay())
+}
+const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` }
+type Editor = { kind: 'plan'; plan: Plan } | { kind: 'results'; session: Session }
+
+function readRecovery(): { draft?: WorkoutDraft; error: string } {
+  try {
+    const raw = localStorage.getItem(draftKey)
+    if (!raw) return { error: '' }
+    const data = JSON.parse(raw)
+    const legacy = !('session' in data)
+    const draft: WorkoutDraft = legacy ? { session: data } : data
+    validateSession(draft.session)
+    if (legacy) draft.session = recoverLegacyDraft(draft.session)
+    const fields = draft.fields
+    if (fields !== undefined && (!fields || typeof fields !== 'object' || Array.isArray(fields)
+      || Object.values(fields).some(value => typeof value !== 'string')
+      || !guideSteps(getGuide(draft.session))[getGuide(draft.session).cursor])) throw new Error('Invalid set editor.')
+    return { draft, error: '' }
+  } catch {
+    return { error: 'Draft recovery unavailable. Existing draft data was retained.' }
+  }
+}
+
+function committedDraft(draft: WorkoutDraft, rows: Session[]) {
+  // A save may commit immediately before a reload or a failed draft cleanup.
+  return rows.find(saved => saved.id === draft.session.id && !draft.fields
+    && saved.revision === draft.session.revision + 1
+    && same(saved, { ...draft.session, status: saved.status, revision: saved.revision }))
 }
 
 function App({ store = defaultStore }: { store?: SessionStore }) {
   const syncStore = useMemo(() => new SyncStore(store.open), [store])
-  const [recovery, setRecovery] = useState(readRecovery)
-  const [machineText, setMachineText] = useState<Record<string, string>>({})
-  const [date, setDate] = useState(() => recovery.draft?.date ?? today())
+  const [initialRecovery] = useState(readRecovery)
+  const [recoveryError, setRecoveryError] = useState(initialRecovery.error)
+  const [date, setDate] = useState(() => initialRecovery.draft?.session.date ?? today())
   const [day, setDay] = useState('Mon')
   const [records, setRecords] = useState<Session[]>([])
   const [plans, setPlans] = useState<Plan[]>([demoPlan])
   const [planId, setPlanId] = useState(demoPlan.id)
-  const [session, setSession] = useState<Session | undefined>(recovery.draft)
-  const [message, setMessage] = useState(recovery.draft ? 'Recovered draft — save to confirm it in workout history.' : '')
-  const [error, setError] = useState(recovery.error)
+  const [draft, setDraft] = useState<WorkoutDraft | undefined>(initialRecovery.draft)
+  const [message, setMessage] = useState(initialRecovery.draft ? 'Recovered draft on this device.' : '')
+  const [error, setError] = useState(initialRecovery.error)
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(true)
-  const [dirty, setDirty] = useState(Boolean(recovery.draft))
+  const [dirty, setDirty] = useState(Boolean(initialRecovery.draft))
+  const [editor, setEditor] = useState<Editor>()
+  const [editorDirty, setEditorDirty] = useState(false)
+  const saving = useRef(false)
+  const session = draft?.session
+
+  function restore(recovered: WorkoutDraft, rows: Session[], savedPlans: Plan[]) {
+    const saved = committedDraft(recovered, rows)
+    const restored = saved ?? recovered.session
+    setDraft(saved ? { session: saved } : recovered)
+    setDate(restored.date)
+    setPlanId(restored.planId)
+    setDay(dayFor(savedPlans.find(plan => plan.id === restored.planId)?.weekday))
+    setDirty(!saved)
+    setMessage(saved ? 'Reopened saved workout.' : 'Recovered draft on this device.')
+    if (saved) {
+      try { localStorage.removeItem(draftKey) }
+      catch { setError('The saved workout is available. The recovery draft could not be cleared.') }
+    }
+  }
+
   useEffect(() => {
     let active = true
     const refreshSaved = () => { void store.list().then(rows => {
       if (!active) return
       setRecords(rows)
       void store.plans().then(p => { if (active) setPlans(p) }).catch(() => {})
-      // Keep unsaved recovery state in memory and localStorage. Clean views may
-      // follow remote changes; stale drafts still face local revision checks.
-      if (!dirty && !busy) setSession(current => current ? rows.find(row => row.id === current.id) : current)
+      if (!dirty && !busy) setDraft(current => {
+        const saved = current && rows.find(row => row.id === current.session.id)
+        return saved ? { session: saved } : undefined
+      })
     }).catch(() => {}) }
     window.addEventListener('workout-storage', refreshSaved)
     const channel = typeof BroadcastChannel === 'undefined' ? undefined : new BroadcastChannel('workout-storage')
     if (channel) channel.onmessage = refreshSaved
     return () => { active = false; channel?.close(); window.removeEventListener('workout-storage', refreshSaved) }
   }, [store, dirty, busy])
+
   useEffect(() => {
-    if (!dirty) return
+    if (!dirty && !editorDirty) return
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
     window.addEventListener('beforeunload', warn)
     return () => window.removeEventListener('beforeunload', warn)
-  }, [dirty])
+  }, [dirty, editorDirty])
+
   useEffect(() => {
     let active = true
     void (async () => {
-      try { await store.ensurePlan(demoPlan); const rows = await store.list(); const savedPlans = await store.plans(); if (active) { setRecords(rows); setPlans(savedPlans) } }
-      catch (e) { if (active) setError(`Storage unavailable: ${(e as Error).message} Nothing was saved to history. Retry when ready.`) }
-      finally { if (active) setLoading(false) }
+      try {
+        await store.ensurePlan(demoPlan)
+        const [rows, savedPlans] = await Promise.all([store.list(), store.plans()])
+        if (active) {
+          setRecords(rows)
+          setPlans(savedPlans)
+          const recovered = initialRecovery.draft
+          if (recovered) restore(recovered, rows, savedPlans)
+        }
+      } catch (error) {
+        if (active) setError(`Storage unavailable: ${(error as Error).message} Retry when ready.`)
+      } finally { if (active) setLoading(false) }
     })()
     return () => { active = false }
-  }, [store])
+  }, [store, initialRecovery])
 
-  function keepDraft(next: Session) {
-    setSession(next); setDirty(true); setError('')
-    try { localStorage.setItem(draftKey, JSON.stringify(next)); setMessage('Draft retained on this device — not yet saved to history.') }
-    catch { setMessage('Unsaved changes'); setError('Draft storage failed. Keep this page open and save to history before leaving.') }
+  function keepDraft(next: WorkoutDraft) {
+    setDraft(next)
+    setDirty(true)
+    setError('')
+    try {
+      localStorage.setItem(draftKey, JSON.stringify(next))
+      setMessage('Progress kept on this device as a draft.')
+    } catch {
+      setMessage('Unsaved changes')
+      setError('Draft storage failed. Keep this page open and save before leaving.')
+    }
   }
-  function edit(id: string, index: number, value: Performance) {
-    try { keepDraft(updateSet(session!, id, index, value)) }
-    catch (e) { setError((e as Error).message) }
-  }
+
   async function refresh() {
     setBusy(true)
     try {
-      await store.ensurePlan(demoPlan); setRecords(await store.list()); setPlans(await store.plans())
+      await store.ensurePlan(demoPlan)
+      const [rows, savedPlans] = await Promise.all([store.list(), store.plans()])
+      setRecords(rows)
+      setPlans(savedPlans)
       const next = readRecovery()
-      setRecovery(next); setError(next.error)
-      if (next.draft && !session) {
-        setSession(next.draft); setDate(next.draft.date); setDirty(true)
-        setMessage('Recovered draft - save to confirm it in workout history.')
-      }
-    }
-    catch (e) { setError(`Storage unavailable: ${(e as Error).message} Your current edits remain on screen.`) }
-    finally { setBusy(false) }
+      setRecoveryError(next.error)
+      setError(next.error)
+      if (next.draft && !session) restore(next.draft, rows, savedPlans)
+    } catch (error) {
+      setError(`Storage unavailable: ${(error as Error).message} Your current edits remain on screen.`)
+    } finally { setBusy(false) }
   }
+
   async function persist(complete: boolean) {
-    if (Object.values(machineText).some(value => !/^P\d+$/.test(value))) { setError('Enter a machine position such as P9 before saving.'); return }
-    if (!session || !window.confirm(complete ? 'Save and complete this session? Completed history is read-only.' : 'Save this session on this device?')) return
-    setBusy(true); setError(''); setMessage('Saving…')
+    if (!draft || saving.current) return
+    let prepared = draft.session
     try {
-      const saved = await (complete ? store.complete(session) : store.save(session))
-      setSession(saved); setDirty(false)
+      if (draft.fields) {
+        const guide = getGuide(prepared)
+        const current = guideSteps(guide)[guide.cursor]
+        prepared = recordSet(prepared, readActual(setActual(current) ?? current.target, draft.fields), false)
+      }
+    } catch (error) { setError((error as Error).message); return }
+    if (!window.confirm(complete ? 'Finish and save this workout?' : 'Save this session on this device?')) return
+    if (prepared !== draft.session) keepDraft({ session: prepared })
+    saving.current = true
+    setBusy(true)
+    setError('')
+    setMessage('Saving…')
+    try {
+      const saved = await (complete ? store.complete(prepared) : store.save(prepared))
+      setDraft({ session: saved })
+      setDirty(false)
       setRecords(rows => [saved, ...rows.filter(row => row.id !== saved.id)].sort((a, b) => b.date.localeCompare(a.date)))
       setMessage(complete ? 'Saved and completed on this device.' : 'Saved on this device.')
       try { localStorage.removeItem(draftKey) }
-      catch { setError('History saved, but the recovery draft could not be cleared. A reload may recover an older draft; reopen saved history instead.') }
-    } catch (e) { setMessage('Unsaved changes'); setError(`Save failed: ${(e as Error).message} Your edits remain here. Retry saving before closing.`) }
-    finally { setBusy(false) }
+      catch { setError('History saved. The recovery draft could not be cleared.') }
+    } catch (error) {
+      setMessage('Save failed. Your progress is still open.')
+      setError(`Save failed: ${(error as Error).message}`)
+    } finally { saving.current = false; setBusy(false) }
   }
-  const previous = session && records.filter(row => row.planId === session.planId && row.demo === session.demo && row.date < session.date && row.status === 'completed').sort((a, b) => b.date.localeCompare(a.date))[0]
-  const plan = plans.find(p => p.id === (session?.planId ?? planId)) ?? demoPlan
-  const availableDay = days[(plan.weekday + 6) % 7]
-  const active = records.find(row => row.planId === plan.id && row.date === date && row.status === 'active')
-  const exercises = session?.exercises ?? plan.exercises
-  const finished = session?.status === 'completed'
 
-  return <main className="runner">
+  function reopen(saved: Session) {
+    setDraft({ session: saved })
+    setPlanId(saved.planId)
+    setDay(dayFor(plans.find(plan => plan.id === saved.planId)?.weekday))
+    setMessage('Reopened saved session.')
+    setError('')
+  }
+
+  function discard() {
+    if (!window.confirm('Discard unsaved changes? Saved history will be retained.')) return
+    try {
+      localStorage.removeItem(draftKey)
+      setDraft(undefined)
+      setDirty(false)
+      setMessage('Unsaved changes discarded.')
+      setError('')
+    } catch { setError('Could not clear the recovery draft. Your edits remain here.') }
+  }
+
+  function openEditor(next: Editor) {
+    setEditor(next)
+    setError('')
+    setMessage('')
+  }
+
+  function closeEditor() {
+    setEditor(undefined)
+    setEditorDirty(false)
+    setError('')
+  }
+
+  async function saveEditor(write: () => Promise<void>) {
+    if (saving.current) return
+    saving.current = true
+    setBusy(true)
+    setError('')
+    try {
+      await write()
+      closeEditor()
+    } catch (error) { setError((error as Error).message) }
+    finally { saving.current = false; setBusy(false) }
+  }
+
+  function savePlan(original: Plan, exercises: Exercise[]) {
+    void saveEditor(async () => {
+      const saved = await store.savePlan(original, exercises)
+      setPlans(plans => plans.map(plan => plan.id === saved.id ? saved : plan))
+      setMessage('Workout plan saved.')
+    })
+  }
+
+  function saveCorrections(original: Session, corrections: ResultCorrection[]) {
+    if (!corrections.length) { closeEditor(); return }
+    if (!window.confirm('Save corrections to this completed workout?')) return
+    void saveEditor(async () => {
+      const saved = await store.correctResults(original, corrections)
+      setDraft({ session: saved })
+      setRecords(rows => rows.map(row => row.id === saved.id ? saved : row))
+      setMessage('Recorded results corrected.')
+    })
+  }
+
+  const editorActions = {
+    busy, error, onError: setError,
+    onChange: () => { setEditorDirty(true); setError('') },
+    onCancel: () => { if (!editorDirty || window.confirm('Discard unsaved editor changes?')) closeEditor() },
+  }
+
+  const plan = plans.find(p => p.id === planId) ?? plans[0]
+  const sessionPlan = session && plans.find(p => p.id === session.planId)
+  const availableDay = dayFor((session ? sessionPlan : plan)?.weekday)
+  const showSession = Boolean(!editor && draft && (!loading || dirty) && (day === availableDay || loading))
+  const available = plan && day === dayFor(plan.weekday)
+  const hasSets = plan?.exercises.some(exercise => plannedSets(exercise).length)
+  const active = plan && records.find(row => row.planId === plan.id && row.demo === plan.demo && row.date === date && row.status === 'active')
+  const previous = session && records.find(row => row.planId === session.planId && row.demo === session.demo && row.date < session.date && row.status === 'completed')
+  const week = <nav className="week" aria-label="Weekly day selector">{days.map(d => <button key={d} disabled={busy} aria-pressed={day === d} onClick={() => setDay(d)}>{d}<small>{d === availableDay ? 'Strength' : 'No plan'}</small></button>)}</nav>
+  const status = <p role="status" aria-live="polite">{message || 'Confirm a save to add your workout to local history.'}</p>
+
+  return <main className={showSession ? 'runner runner-active' : 'runner'}>
     <header className="app-header">
-      <div><p className="eyebrow">WORKOUT COMPANION / LOCAL TRAINING LOG</p><h1>One set at a time.</h1><p>Your plan, your last lift, your next set.</p></div>
+      <div><p className="eyebrow">WORKOUT COMPANION / LOCAL TRAINING LOG</p><h1>One set at a time.</h1>{!showSession && <p>Your plan, your last lift, your next set.</p>}</div>
       <SyncPanel store={syncStore} />
     </header>
-    <PwaStatus canReload={!dirty && !busy && !loading && !recovery.error} />
-    {plan.id === demoPlan.id && <aside className="demo"><strong>DEMO workspace</strong><span>Sample plan only. These practice sessions are not imported workout history. Monday is the only available sample plan; you can practice it on any date.</span></aside>}
-    {plans.length > 1 && <label className="plan-picker">Saved plan<select value={plan.id} disabled={dirty || busy} onChange={e => { setPlanId(e.target.value); setSession(undefined); setDay(days[((plans.find(p => p.id === e.target.value)?.weekday ?? 1) + 6) % 7]) }}>{plans.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>}
-    <nav className="week" aria-label="Weekly day selector">{days.map(d => <button key={d} aria-pressed={day === d} onClick={() => setDay(d)}>{d}<small>{d === availableDay ? 'Strength' : 'No plan'}</small></button>)}</nav>
+    <PwaStatus canReload={!dirty && !editorDirty && !busy && !loading && !recoveryError} />
+    {!showSession && (session?.demo ?? plan?.demo) && <aside className="demo"><strong>DEMO workspace</strong><span>Practice sessions use sample data. You can choose any workout date.</span></aside>}
+    {!showSession && !editor && week}
     <div className="workspace">
-      <section aria-label="Workout plan">
-        <div className="plan-heading"><div><p className="eyebrow">{day === availableDay ? (plan.id === demoPlan.id ? 'MONDAY / DEMO PLAN' : 'SAVED PLAN') : `${day.toUpperCase()} / UNSCHEDULED`}</p><h2>{day === availableDay ? (plan.id === demoPlan.id ? 'Strength, steadily.' : plan.name) : 'No workout planned'}</h2></div><label>Workout date<input type="date" value={date} disabled={dirty || busy} onChange={e => { setDate(e.target.value); setSession(undefined); setMessage('') }} /></label></div>
-        {day !== availableDay ? <p className="empty">There’s no plan for this day yet. Your Monday session stays intact when you switch days.</p> : <>
-          {!session && <button className="primary" disabled={!date || busy || loading || Boolean(recovery.error)} onClick={() => { if (active) { setSession(structuredClone(active)); setMessage('Reopened saved session.') } else { try { keepDraft(createSession(plan, date)) } catch (e) { setError((e as Error).message) } } }}>{active ? 'Resume Workout' : 'Start Workout'}</button>}
-          <p className="measurement-note">Dumbbell loads are pounds as logged. The sample source does not specify per-hand or combined weight. Machine settings (P9, P10…) are positions, not pounds.</p>
-          {session && <section className="session-heading" aria-label="Current session"><h3>{finished ? 'Workout finished' : 'Current workout'} · {session.date}</h3><p>{finished ? `${exercises.length} exercises · ${exercises.reduce((sum, e) => sum + e.sets.length, 0)} sets recorded. Saved on this device. Completed history is read-only.` : 'Edit each set to record what you actually did. Save when you’re ready.'}</p></section>}
-          {exercises.map((exercise, number) => <article className="exercise" key={exercise.id}>
-            <div className="exercise-title"><span className="number">{String(number + 1).padStart(2, '0')}</span><h3>{exercise.name}</h3><span>{exercise.sets.length} sets</span></div>
-            <div className="previous"><strong>Previous completed {session?.demo ? 'DEMO ' : ''}</strong><span>{previous ? `${previous.date}: ${previous.exercises.find(e => e.id === exercise.id)?.sets.map(formatSet).join(' | ') ?? 'Exercise not recorded'}` : 'No earlier completed workout. Plan values below are samples.'}</span></div>
-            <p className="notation"><strong>{session ? 'Current' : 'Plan'}</strong> {exercise.sets.map(formatSet).join(' | ')}</p>
-            {session && <fieldset disabled={busy || finished} onFocusCapture={event => { if (event.target instanceof HTMLInputElement) event.target.select() }}><legend className="sr-only">{exercise.name} current sets</legend>{exercise.sets.map((set, i) => <div className="set" key={i}><span className="set-number">Set {i + 1}</span>
-              {set.kind === 'weight' && <label>Dumbbell weight (lb)<input aria-label={`${exercise.name} set ${i + 1} pounds`} type="number" inputMode="decimal" min="0" step="any" value={set.pounds} onChange={e => edit(exercise.id, i, { ...set, pounds: e.target.valueAsNumber })} /></label>}
-              {set.kind === 'machine' && <label>Machine setting<input aria-label={`${exercise.name} set ${i + 1} machine position`} value={machineText[`${session.id}:${exercise.id}:${i}`] ?? set.position} aria-invalid={machineText[`${session.id}:${exercise.id}:${i}`] !== undefined && !/^P\d+$/.test(machineText[`${session.id}:${exercise.id}:${i}`])} onChange={e => {
-                const value = e.target.value
-                setMachineText(text => ({ ...text, [`${session.id}:${exercise.id}:${i}`]: value }))
-                setDirty(true)
-                if (/^P\d+$/.test(value)) edit(exercise.id, i, { ...set, position: value })
-              }} onBlur={e => { if (!/^P\d+$/.test(e.target.value)) setError('Enter a machine position such as P9 before saving.') }} /></label>}
-              {set.kind === 'hold' ? <label>Duration (seconds)<input aria-label={`${exercise.name} set ${i + 1} seconds`} type="number" min="0" step="any" value={set.seconds} onChange={e => edit(exercise.id, i, { ...set, seconds: e.target.valueAsNumber })} /></label> : <label>Repetitions<input aria-label={`${exercise.name} set ${i + 1} reps`} type="number" inputMode="numeric" min="0" step="1" value={set.reps} onChange={e => edit(exercise.id, i, { ...set, reps: e.target.valueAsNumber })} /></label>}
-            </div>)}</fieldset>}
-          </article>)}
-          {session && !finished && <div className="actions"><button disabled={busy} onClick={() => void persist(false)}>Save session</button><button className="primary" disabled={busy} onClick={() => void persist(true)}>Save and complete</button>{dirty && <button disabled={busy} onClick={() => {
-            if (!window.confirm('Discard unsaved changes? Saved history will be retained.')) return
-            try { localStorage.removeItem(draftKey); setSession(undefined); setMachineText({}); setDirty(false); setMessage('Unsaved changes discarded.'); setError('') }
-            catch { setError('Could not clear the recovery draft. Your edits remain here.') }
-          }}>Discard unsaved changes</button>}</div>}
+      <section aria-label={editor ? 'Workout editor' : showSession ? 'Current session' : 'Workout plan'}>
+        {editor?.kind === 'plan' ? <DayWorkoutEditor {...editorActions} plan={editor.plan} weekday={dayFor(editor.plan.weekday)}
+          onSave={exercises => savePlan(editor.plan, exercises)} />
+          : editor?.kind === 'results' ? <RecordedResultsEditor {...editorActions} session={editor.session}
+            onSave={corrections => saveCorrections(editor.session, corrections)} />
+          : showSession && draft ? <>
+          <GuidedWorkout key={draft.session.id} draft={draft} day={exportDay(draft.session, sessionPlan)} previous={previous} busy={busy || loading} error={error}
+            onChange={keepDraft} onError={setError} onFinish={() => void persist(true)} />
+          <div className="actions session-actions">
+            {draft.session.status === 'active' && <button disabled={busy || loading} onClick={() => void persist(false)}>Save session</button>}
+            {draft.session.status === 'completed' && <button disabled={busy || dirty || loading} onClick={() => openEditor({ kind: 'results', session: draft.session })}>Correct recorded results</button>}
+            {dirty ? <button disabled={busy || loading} onClick={discard}>Discard unsaved changes</button>
+              : <button disabled={busy} onClick={() => { setDraft(undefined); setMessage(''); setError('') }}>Back to plan</button>}
+          </div>
+          <div className="session-status">{status}</div>
+        </> : <>
+          <div className="plan-heading">
+            <div><p className="eyebrow">{day.toUpperCase()} / {available ? 'WORKOUT PLAN' : 'UNSCHEDULED'}</p>
+              <h2>{available ? plan.name : 'No workout planned'}</h2></div>
+            <label>Workout date<input type="date" value={date} disabled={dirty || busy} onChange={e => { setDate(e.target.value); setDraft(undefined); setMessage('') }} /></label>
+          </div>
+          {plans.length > 1 && <label className="plan-picker">Saved plan<select value={plan?.id} disabled={dirty || busy} onChange={e => {
+            setPlanId(e.target.value); setDraft(undefined); setDay(dayFor(plans.find(p => p.id === e.target.value)?.weekday)); setMessage('')
+          }}>{plans.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>}
+          {!draft && available && <div className="actions plan-actions">
+            {(active || hasSets) && <button className="primary" disabled={!date || busy || loading || Boolean(recoveryError)} onClick={() => {
+              if (active) reopen(active)
+              else {
+                try {
+                  const next = startGuidedWorkout(plan, date)
+                  validateSession(next)
+                  keepDraft({ session: next })
+                } catch (error) { setError((error as Error).message) }
+              }
+            }}>{active ? 'Resume Workout' : 'Start Workout'}</button>}
+            <button disabled={busy || loading} onClick={() => openEditor({ kind: 'plan', plan })}>Edit Day's Workout</button>
+          </div>}
+          {available && (hasSets ? <ul className="plan-preview">{plan.exercises.filter(exercise => plannedSets(exercise).length).map((exercise, index) => <li key={index}>
+            <strong>{exercise.name}</strong><span>{plannedSets(exercise).map(formatSet).join(' · ')}</span>
+          </li>)}</ul> : <p>This plan has no sets.</p>)}
         </>}
       </section>
-      <aside className="history" aria-label="Saved sessions"><h2>On this device</h2><p>Saved workouts · {date}</p>{records.filter(s => s.date === date).length === 0 && <p>No saved sessions for this date.</p>}{records.filter(s => s.date === date).map(row => <button key={row.id} disabled={busy || dirty} onClick={() => { setSession(structuredClone(row)); setDay(days[((plans.find(p => p.id === row.planId)?.weekday ?? 1) + 6) % 7]); setMessage('Reopened saved session.'); setError('') }}>{row.demo ? 'DEMO ' : ''}{row.date} · {row.status}<small>Open saved workout · {row.id.slice(0, 8)}</small></button>)}<p>Save your draft before changing dates or opening another workout.</p><button disabled={busy} onClick={() => void refresh()}>Retry storage / refresh history</button></aside>
+      <aside className="history" aria-label="Saved sessions">
+        <h2>On this device</h2><p>Saved workouts · {date}</p>
+        {records.filter(row => row.date === date).length === 0 && <p>No saved sessions for this date.</p>}
+        {records.filter(row => row.date === date).map(row => <button key={row.id} disabled={busy || dirty || loading || Boolean(editor) || (row.status === 'active' && Boolean(recoveryError))} onClick={() => reopen(row)}>
+          {row.demo ? 'DEMO ' : ''}{row.date} · {row.status}<small>Open saved workout · {row.id.slice(0, 8)}</small>
+        </button>)}
+        {dirty && <p>Save your draft before opening another workout.</p>}
+        <button disabled={busy || loading || Boolean(editor)} onClick={() => void refresh()}>Retry storage / refresh history</button>
+      </aside>
     </div>
-    <footer className="save-status"><p role="status" aria-live="polite">{message || 'Confirm a save to add your workout to local history.'}</p>{error && <p role="alert">{error}</p>}</footer>
+    {showSession && week}
+    {!showSession && !editor && <footer className="save-status">{status}{error && <p role="alert">{error}</p>}</footer>}
   </main>
 }
 export default App

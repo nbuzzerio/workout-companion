@@ -5,7 +5,7 @@ import { resolve, join } from 'node:path'
 import { demoPlan } from '../../src/workouts.ts'
 import { fixture, password, type Fixture } from '../support/local-service.mjs'
 let service: Fixture
-test.beforeEach(async () => { service = await fixture('http://127.0.0.1:5174', 4317) })
+test.beforeEach(async () => { service = await fixture('http://127.0.0.1:5174', Number(process.env.WORKOUT_SYNC_TEST_PORT ?? 4317)) })
 test.afterEach(async () => { await service?.close() })
 async function panel(page: Page) { const details = page.locator('.sync-panel'); if ((await details.getAttribute('open')) === null) await details.locator('summary').first().click() }
 async function login(page: Page) { await panel(page); await page.getByLabel('Password', { exact: true }).fill(password); await page.getByRole('button', { name: 'Sign in', exact: true }).click(); await expect(page.getByRole('button', { name: 'Logout and pause sync' })).toBeVisible() }
@@ -114,6 +114,7 @@ test('one mobile header button uploads and downloads, then foreground and period
   await button.click()
   await write
   await expect(page.locator('.sync-state')).toHaveText('Synced')
+  await page.getByRole('button', { name: 'Back to plan' }).click()
   await expect(page.getByRole('combobox', { name: 'Saved plan', exact: true }).locator('option')).toContainText(['Manual download'])
   expect(await pending(page)).toBe(0)
   await remotePlan('Foreground download')
@@ -127,6 +128,7 @@ test('one mobile header button uploads and downloads, then foreground and period
   await expect(page.locator('.sync-panel')).not.toHaveAttribute('open', '')
   await test.step('a held Web Lock times out and the same saved edit retries safely', async () => {
     await expect(page.locator('.sync-state')).toHaveText('Synced')
+    await page.getByRole('button', { name: 'Resume Workout' }).click()
     await page.evaluate(() => new Promise<void>(acquired => {
       void navigator.locks.request('workout-sync-v1', () => new Promise<void>(release => {
         window.addEventListener('release-test-lock', () => release(), { once: true })
@@ -306,7 +308,12 @@ test('supervised export recovery preserves records and labels, refuses an existi
   const source = await browser.newContext(); const recovered = await browser.newContext(); let service: Awaited<ReturnType<typeof startRecoveryServer>> | undefined
   try {
     const page = await source.newPage(); page.on('dialog', d => void d.accept())
-    await page.goto('/apps/workout/'); await page.getByRole('button', { name: 'Start Workout' }).click(); await page.getByRole('button', { name: 'Save and complete' }).click()
+    await page.goto('/apps/workout/'); await page.getByRole('button', { name: 'Start Workout' }).click()
+    for (let i = 0; i < 3; i++) {
+      await page.getByRole('button', { name: 'Skip Exercise', exact: true }).click()
+      await page.getByRole('button', { name: 'Confirm Skip Exercise' }).click()
+    }
+    await page.getByRole('button', { name: 'Finish Workout' }).click()
     await connect(page, `Recovery ${Date.now()}`, true); await expect.poll(() => pending(page)).toBe(0)
     await page.getByLabel('Person name', { exact: true }).fill('Recovery label'); await page.getByRole('button', { name: 'Create Person (online)' }).click()
     await page.getByLabel('Saved record', { exact: true }).selectOption({ index: 2 }); await page.getByLabel('Add Person as subject').selectOption({ label: 'Recovery label' })
@@ -328,7 +335,9 @@ test('supervised export recovery preserves records and labels, refuses an existi
     await copy.getByRole('button', { name: 'Recover into new local database' }).click(); await expect(copy.locator('#result')).toContainText('Recovery refused')
     expect(await localState(copy)).toEqual(state)
     await copy.getByRole('link', { name: 'Inspect recovered workouts' }).click()
-    await copy.getByRole('button', { name: /DEMO .*completed/ }).click(); await expect(copy.getByLabel('DB Deadlift set 1 pounds')).toBeDisabled()
+    await copy.getByRole('button', { name: /DEMO .*completed/ }).click()
+    await expect(copy.getByRole('heading', { name: 'Workout finished' })).toBeVisible()
+    await expect(copy.locator('.actual-fields')).toHaveCount(0)
     await copy.waitForTimeout(2500); expect(api).toEqual([])
     // Source history is never read/written by the recovery server itself.
     expect((await localState(page)).sessions).toEqual(original.sessions)

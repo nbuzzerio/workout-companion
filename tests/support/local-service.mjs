@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 const root = fileURLToPath(new URL('../../', import.meta.url));
-const backend = resolve(root, '../personal-sync-service/dist/src');
+const backend = process.env.WORKOUT_SYNC_SERVICE_BUILD ?? resolve(root, '../personal-sync-service/dist/src');
 const load = name => import(pathToFileURL(join(backend, name)).href);
 export const password = 'synthetic-workout-passphrase-only';
 export async function fixture(origin = 'http://127.0.0.1:5174', port = 0) {

@@ -1,4 +1,6 @@
-import { validateSession, type Plan, type Session } from './workouts'
+import { validateSession, type Exercise, type Plan, type Session } from './workouts'
+import { correctCompletedResults, type ResultCorrection } from './guided-workout'
+import { planSchema, same } from './sync'
 import { allStores, openDatabase, request, transaction } from './database'
 import { enqueue } from './sync-store'
 export { openDatabase } from './database'
@@ -25,6 +27,21 @@ export class SessionStore {
   async plans(): Promise<Plan[]> {
     return transaction(this.open, ['plans'], 'readonly', async tx => request(tx.objectStore('plans').getAll()) as Promise<Plan[]>)
   }
+  async savePlan(expected: Plan, exercises: Exercise[]): Promise<Plan> {
+    const original = structuredClone(expected)
+    const changes = structuredClone(exercises)
+    return transaction(this.open, allStores, 'readwrite', async tx => {
+      const object = tx.objectStore('plans')
+      const prior = await request(object.get(original.id)) as Plan | undefined
+      if (!prior || prior.version !== 1 || !same(prior, original)) throw new Error('Plan changed. Reopen the editor to load the latest plan.')
+      const saved = { ...prior, exercises: changes }
+      if (!planSchema.safeParse(saved).success) throw new Error('Check the exercise names and planned targets.')
+      if (same(prior, saved)) return prior
+      await request(object.put(saved))
+      await enqueue(tx, 'plan', saved)
+      return saved
+    })
+  }
   async reopen(id: string) { return (await this.list()).find(s => s.id === id) }
   async save(session: Session): Promise<Session> {
     validateSession(session); const snapshot = structuredClone(session)
@@ -37,4 +54,20 @@ export class SessionStore {
     })
   }
   async complete(session: Session) { return this.save({ ...session, status: 'completed' }) }
+  async correctResults(expected: Session, corrections: ResultCorrection[]): Promise<Session> {
+    const original = structuredClone(expected)
+    const changes = structuredClone(corrections)
+    return transaction(this.open, allStores, 'readwrite', async tx => {
+      const object = tx.objectStore('sessions')
+      const prior = await request(object.get(original.id)) as Session | undefined
+      if (!prior || !same(prior, original)) throw new Error('Workout changed. Reopen the saved workout to load the latest results.')
+      const corrected = correctCompletedResults(prior, changes)
+      if (same(prior, corrected)) return prior
+      const saved = { ...corrected, revision: prior.revision + 1 }
+      validateSession(saved)
+      await request(object.put(saved))
+      await enqueue(tx, 'session', saved)
+      return saved
+    })
+  }
 }

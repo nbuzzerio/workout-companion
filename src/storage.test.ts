@@ -1,6 +1,8 @@
 import { expect, test, vi } from 'vitest'
 import 'fake-indexeddb/auto'
 import { openDatabase, SessionStore } from './storage'
+import { sessionSchema } from './sync'
+import { SyncStore } from './sync-store'
 import { createSession, demoPlan, updateSet } from './workouts'
 // Deterministic transaction tests; real browser IndexedDB is covered in e2e.
 test('IndexedDB fresh/repeat open, restart persistence, conflicts and history retention', async () => {
@@ -86,4 +88,30 @@ test('pre-integration v1 stores and complete records reopen without a migration 
     request.onsuccess = () => resolve()
     request.onerror = () => reject(request.error)
   })
+})
+
+test('plan edits reject a stale base and completed corrections protect active and legacy records', async () => {
+  const name = `w01-corrections-${crypto.randomUUID()}`
+  const open = () => openDatabase(name)
+  const store = new SessionStore(open)
+  await store.ensurePlan(demoPlan)
+  const active = await store.save(createSession(demoPlan, '2026-11-09'))
+  const legacy = await store.complete(createSession(demoPlan, '2026-11-10'))
+  const updatedPlan = await store.savePlan(demoPlan, demoPlan.exercises.slice(1))
+  await expect(store.savePlan(demoPlan, [])).rejects.toThrow('Plan changed')
+
+  const actual = { kind: 'weight', pounds: 47, reps: 7 } as const
+  const feedback = { rir: '0', mobility: 'Very tight', coachNotes: 'Reduce load', painNotes: 'Stiff' } as const
+  const corrections = [{ exerciseIndex: 0, setIndex: 0, actual }, { exerciseIndex: 0, feedback }]
+  await expect(store.correctResults(active, corrections)).rejects.toThrow('Resume the active workout')
+  const corrected = await store.correctResults(legacy, corrections)
+  await expect(store.correctResults(legacy, corrections)).rejects.toThrow('Workout changed')
+  expect(await store.reopen(active.id)).toEqual(active)
+  expect(await store.plans()).toEqual([updatedPlan])
+  expect(corrected.guidance).toBeUndefined()
+  expect(corrected).toMatchObject({ id: legacy.id, status: 'completed', revision: legacy.revision + 1 })
+  expect(corrected.exercises[0]).toEqual({ ...legacy.exercises[0], feedback, sets: [actual, ...legacy.exercises[0].sets.slice(1)] })
+  expect(corrected.exercises.slice(1)).toEqual(legacy.exercises.slice(1))
+  const queued = (await new SyncStore(open).view()).pending.find(row => row.recordId === legacy.id && row.after)
+  expect(sessionSchema.parse(queued?.value)).toEqual(corrected)
 })

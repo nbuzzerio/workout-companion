@@ -1,0 +1,202 @@
+import 'fake-indexeddb/auto'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, expect, test, vi } from 'vitest'
+import App from './App'
+import { draftKey } from './guided-workout'
+import { openDatabase, SessionStore } from './storage'
+import { demoPlan, plannedSets, type Plan } from './workouts'
+
+afterEach(() => { cleanup(); localStorage.clear(); vi.restoreAllMocks() })
+
+function workoutStore() {
+  const name = `editor-${crypto.randomUUID()}`
+  return new SessionStore(() => openDatabase(name))
+}
+
+const button = (name: string | RegExp) => screen.getByRole('button', { name }) as HTMLButtonElement
+const click = (name: string | RegExp) => fireEvent.click(button(name))
+const change = (label: string, value: string) => fireEvent.change(screen.getByLabelText(label), { target: { value } })
+const valueOf = (label: string) => (screen.getByLabelText(label) as HTMLInputElement).value
+const editDay = "Edit Day's Workout"
+
+async function ready(name: string | RegExp) {
+  await waitFor(() => expect(button(name).disabled).toBe(false))
+}
+
+test('bulk edits a weekly day and reloads typed and freeform targets without creating history', async () => {
+  const store = workoutStore()
+  const real: Plan = { ...structuredClone(demoPlan), id: 'real-thursday', name: 'Thursday strength', weekday: 4, demo: false }
+  const demo = structuredClone(demoPlan)
+  demo.exercises[1].musclesSource = 'imported metadata'
+  await store.ensurePlan(real)
+  await store.ensurePlan(demo)
+  const first = render(<App store={store} />)
+  await ready(editDay)
+  expect(button('Start Workout').disabled).toBe(false)
+  click(editDay)
+  expect(screen.queryByRole('button', { name: 'Start Workout' })).toBeNull()
+  change('Exercise 2 name', 'Single-leg extension')
+  click('Move Single-leg extension up')
+  expect(valueOf('Exercise 1 name')).toBe('Single-leg extension')
+  change('Single-leg extension set 1 machine position', 'P')
+  click('Save workout plan')
+  expect(screen.getByRole('alert').textContent).toContain('Enter a machine position')
+  expect((await store.plans()).find(plan => plan.demo)).toEqual(demo)
+  change('Single-leg extension set 1 machine position', 'P11')
+  fireEvent.click(screen.getByLabelText('Single-leg extension set 1 per side'))
+  click('Remove DB Deadlift set 2')
+  change('DB Deadlift set 2 pounds', '65.5')
+  click('Remove Seated Military Press')
+  click('Add exercise')
+  change('Exercise 3 name', 'Cooldown')
+  change('Cooldown set 1 target type', 'freeform')
+  change('Cooldown set 1 performance', 'P9A-12 | P10A-10\n+ slow negatives')
+  click('Add set to Cooldown')
+  change('Cooldown set 2 target type', 'hold')
+  change('Cooldown set 2 seconds', '42.5')
+  click('Save workout plan')
+  await screen.findByText('Workout plan saved.')
+
+  const plans = await store.plans()
+  const edited = plans.find(plan => plan.demo)!
+  expect(edited).toMatchObject({ id: demo.id, name: demo.name, weekday: 1, demo: true })
+  expect(edited.exercises.map(exercise => exercise.name)).toEqual(['Single-leg extension', 'DB Deadlift', 'Cooldown'])
+  expect(edited.exercises[0].musclesSource).toBe('imported metadata')
+  expect(plannedSets(edited.exercises[0])[0]).toEqual({ kind: 'machine', position: 'P11', reps: 12, perSide: true })
+  expect(plannedSets(edited.exercises[1])).toEqual([
+    { kind: 'weight', pounds: 46, reps: 10 }, { kind: 'weight', pounds: 65.5, reps: 10 }, { kind: 'weight', pounds: 72, reps: 8 },
+  ])
+  expect(plannedSets(edited.exercises[2])).toEqual([
+    { kind: 'freeform', value: 'P9A-12 | P10A-10\n+ slow negatives' }, { kind: 'hold', seconds: 42.5 },
+  ])
+  expect(plans.find(plan => !plan.demo)).toEqual(real)
+  expect(await store.list()).toEqual([])
+  expect(localStorage.getItem(draftKey)).toBeNull()
+
+  first.unmount()
+  render(<App store={store} />)
+  await ready(editDay)
+  click(/Tue\s*No plan/)
+  expect(screen.queryByRole('button', { name: editDay })).toBeNull()
+  change('Saved plan', real.id)
+  expect(button(/Thu\s*Strength/).getAttribute('aria-pressed')).toBe('true')
+  change('Saved plan', demo.id)
+  click('Start Workout')
+  expect(screen.getByRole('heading', { name: 'Single-leg extension' })).toBeDefined()
+  expect(valueOf('Single-leg extension set 1 machine position')).toBe('P11')
+  expect(valueOf('Single-leg extension set 1 reps per side')).toBe('12')
+})
+
+test('the editor protects an unsaved guided draft and changing the plan leaves a saved active session intact', async () => {
+  const store = workoutStore()
+  vi.spyOn(window, 'confirm').mockReturnValue(true)
+  render(<App store={store} />)
+  await ready('Start Workout')
+  click('Start Workout')
+  change('DB Deadlift set 1 pounds', '52')
+  click('Next Set')
+  change('DB Deadlift set 2 pounds', '59')
+  const draft = localStorage.getItem(draftKey)
+  click(/Tue\s*No plan/)
+  expect(screen.queryByRole('button', { name: editDay })).toBeNull()
+  expect(localStorage.getItem(draftKey)).toBe(draft)
+  click(/Mon\s*Strength/)
+  expect(screen.queryByRole('button', { name: 'Correct recorded results' })).toBeNull()
+  click('Save session')
+  await screen.findByText('Saved on this device.')
+  const [active] = await store.list()
+  expect(active.guidance?.cursor).toBe(1)
+  click('Back to plan')
+  click(editDay)
+  change('Exercise 1 name', 'Dumbbell hinge')
+  change('Dumbbell hinge set 2 pounds', '75')
+  click('Save workout plan')
+  await screen.findByText('Workout plan saved.')
+  expect(await store.list()).toEqual([active])
+  click('Resume Workout')
+  expect(screen.getByRole('heading', { name: 'DB Deadlift' })).toBeDefined()
+  expect(screen.getByText('Set 2 of 4')).toBeDefined()
+  expect(screen.getByText('55 lb \u00d7 10')).toBeDefined()
+  expect(valueOf('DB Deadlift set 2 pounds')).toBe('59')
+  click('Back to plan')
+  change('Workout date', '2026-01-09')
+  click('Start Workout')
+  expect(screen.getByRole('heading', { name: 'Dumbbell hinge' })).toBeDefined()
+  click('Next Set')
+  expect(valueOf('Dumbbell hinge set 2 pounds')).toBe('75')
+  expect(await store.list()).toEqual([active])
+})
+
+test('exercise feedback survives draft reload and explicit corrections keep targets, skips and the plan', async () => {
+  const store = workoutStore()
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+  const first = render(<App store={store} />)
+  await ready('Start Workout')
+  const date = valueOf('Workout date')
+  click('Start Workout')
+  fireEvent.click(screen.getByText('Exercise feedback'))
+  const rir = within(screen.getByRole('group', { name: 'RIR' }))
+  const mobility = within(screen.getByRole('group', { name: 'Mobility' }))
+  expect(rir.getAllByRole<HTMLInputElement>('radio').map(input => input.value)).toEqual(['0', '1', '2', '3', '4+', 'N/A'])
+  expect(mobility.getAllByRole<HTMLInputElement>('radio').map(input => [input.value, input.nextElementSibling?.getAttribute('data-tone')]))
+    .toEqual([['Great', 'green'], ['Tight', 'yellow'], ['Very tight', 'red']])
+  fireEvent.click(rir.getByRole('radio', { name: '4+' }))
+  fireEvent.click(mobility.getByRole('radio', { name: 'Tight' }))
+  change('DB Deadlift set 1 pounds', '51.5')
+  change('Pain/Notes', 'Left side tired\nNo pain')
+  change('Coach Notes', 'Slow the lowering')
+  first.unmount()
+
+  const second = render(<App store={store} />)
+  await ready('Next Set')
+  fireEvent.click(screen.getByText('Exercise feedback'))
+  expect(screen.getByRole<HTMLInputElement>('radio', { name: '4+' }).checked).toBe(true)
+  expect(screen.getByRole<HTMLInputElement>('radio', { name: 'Tight' }).checked).toBe(true)
+  expect(valueOf('Pain/Notes')).toBe('Left side tired\nNo pain')
+  expect(valueOf('Coach Notes')).toBe('Slow the lowering')
+  expect(valueOf('DB Deadlift set 1 pounds')).toBe('51.5')
+  click('Next Set')
+  click('Skip Exercise')
+  change('Reason for skipping (optional)', 'Time limit')
+  click('Confirm Skip Exercise')
+  fireEvent.click(screen.getByText('Exercise feedback'))
+  expect(valueOf('Coach Notes')).toBe('')
+  fireEvent.click(screen.getByRole('radio', { name: 'N/A' }))
+  for (let i = 0; i < 2; i++) {
+    click('Skip Exercise')
+    click('Confirm Skip Exercise')
+  }
+  click('Finish Workout')
+  await screen.findByText('Saved and completed on this device.')
+  const [before] = await store.list()
+  expect(before.exercises[0].feedback).toEqual({ rir: '4+', mobility: 'Tight', painNotes: 'Left side tired\nNo pain', coachNotes: 'Slow the lowering' })
+  expect(before.exercises[1].feedback).toEqual({ rir: 'N/A' })
+
+  click('Correct recorded results')
+  const deadlift = within(screen.getByRole('region', { name: 'DB Deadlift' }))
+  expect(deadlift.getByText('Planned 46 lb \u00d7 10')).toBeDefined()
+  change('DB Deadlift recorded set 1 reps', '8')
+  fireEvent.change(deadlift.getByLabelText('Coach Notes'), { target: { value: 'Corrected cue' } })
+  confirm.mockReturnValue(false)
+  click('Save corrections')
+  expect(await store.list()).toEqual([before])
+  confirm.mockReturnValue(true)
+  click('Save corrections')
+  await screen.findByText('Recorded results corrected.')
+  const [after] = await store.list()
+  expect(after).toMatchObject({ id: before.id, date, demo: true, status: 'completed', revision: before.revision + 1 })
+  expect(after.exercises[0].sets).toEqual([{ kind: 'weight', pounds: 51.5, reps: 8 }])
+  expect(after.guidance?.sets[0][0]).toEqual({ target: { kind: 'weight', pounds: 46, reps: 10 }, outcome: { status: 'recorded', actual: after.exercises[0].sets[0] } })
+  expect(after.guidance?.sets[0].slice(1)).toEqual(before.guidance?.sets[0].slice(1))
+  expect(after.exercises[1]).toEqual(before.exercises[1])
+  expect(await store.plans()).toEqual([demoPlan])
+
+  second.unmount()
+  render(<App store={store} />)
+  await ready(/DEMO .*completed/)
+  click(/DEMO .*completed/)
+  expect(screen.getByText('51.5 lb \u00d7 8')).toBeDefined()
+  expect(screen.getByText('Corrected cue')).toBeDefined()
+  expect(screen.getByText('Tight').getAttribute('data-tone')).toBe('yellow')
+  expect(screen.getByText('N/A')).toBeDefined()
+})

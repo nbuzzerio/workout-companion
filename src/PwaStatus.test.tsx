@@ -3,6 +3,7 @@ import { afterEach, expect, test, vi } from 'vitest'
 import App from './App'
 import { PwaStatus } from './PwaStatus'
 import { SessionStore } from './storage'
+import { demoPlan } from './workouts'
 
 const worker = vi.hoisted(() => ({ update: vi.fn(), waiting: true, offline: false }))
 vi.mock('virtual:pwa-register/react', () => ({
@@ -25,11 +26,14 @@ test('the runner prevents an update while dirty, including partial machine input
   const store = new SessionStore()
   vi.spyOn(store, 'ensurePlan').mockResolvedValue(undefined)
   vi.spyOn(store, 'list').mockResolvedValue([])
+  vi.spyOn(store, 'plans').mockResolvedValue([demoPlan])
   vi.spyOn(window, 'confirm').mockReturnValue(true)
   render(<App store={store} />)
   const update = screen.getByRole('button', { name: 'Reload to update' }) as HTMLButtonElement
   await waitFor(() => expect(update.disabled).toBe(false))
   fireEvent.click(screen.getByRole('button', { name: 'Start Workout' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Skip Exercise' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm Skip Exercise' }))
   fireEvent.change(screen.getByLabelText('Leg Extension set 1 machine position'), { target: { value: 'P' } })
   expect(update.disabled).toBe(true)
   fireEvent.click(update)
