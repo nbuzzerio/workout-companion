@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { getGuide, guideSteps, movePastSkipped, movePrevious, readActual, recordFeedback, recordSet, setActual, skipSets, type WorkoutDraft } from './guided-workout'
 import { ExerciseFeedbackFields, ExerciseFeedbackSummary } from './ExerciseFeedback'
+import { ExerciseProgression } from './ExerciseProgression'
 import { GoogleSheetsExport } from './GoogleSheetsExport'
 import { PerformanceFields } from './PerformanceFields'
 import { formatSet, type Session } from './workouts'
@@ -8,7 +9,7 @@ import { formatSet, type Session } from './workouts'
 interface Props {
   draft: WorkoutDraft
   day: string
-  previous?: Session
+  history: readonly Session[]
   busy: boolean
   error: string
   onChange: (draft: WorkoutDraft) => void
@@ -16,7 +17,7 @@ interface Props {
   onFinish: () => void
 }
 
-export function GuidedWorkout({ draft, day, previous, busy, error, onChange, onError, onFinish }: Props) {
+export function GuidedWorkout({ draft, day, history, busy, error, onChange, onError, onFinish }: Props) {
   const { session, fields } = draft
   const guide = getGuide(session)
   const steps = guideSteps(guide)
@@ -73,9 +74,6 @@ export function GuidedWorkout({ draft, day, previous, busy, error, onChange, onE
   const exerciseNumber = guide.sets.slice(0, step.exerciseIndex + 1).filter(sets => sets.length).length
   const next = steps[guide.cursor + 1]
   const nextLabel = !next ? 'Review Workout' : next.exerciseIndex === step.exerciseIndex ? 'Next Set' : 'Next Exercise'
-  const previousIndex = previous?.exercises.findIndex(item => item.id === exercise.id) ?? -1
-  const prior = previous && previousIndex >= 0 ? getGuide(previous).sets[previousIndex][step.setIndex] : undefined
-  const previousActual = prior && setActual(prior)
   const recorded = setActual(step)
   const actual = recorded ?? step.target
   const initiallyEmpty = session.actualsStartEmpty && !recorded
@@ -96,8 +94,9 @@ export function GuidedWorkout({ draft, day, previous, busy, error, onChange, onE
     <h2 id="guided-exercise" ref={heading} tabIndex={-1}>{exercise.name}</h2>
     <dl className="set-target">
       <div><dt>Planned target</dt><dd>{formatSet(step.target)}</dd></div>
-      {previousActual && <div><dt>Previous completed {session.demo ? 'DEMO' : 'workout'}</dt><dd>{previous!.date} · {formatSet(previousActual)}</dd></div>}
     </dl>
+    <ExerciseProgression key={step.exerciseIndex} history={history} exercises={session.exercises}
+      exerciseIndex={step.exerciseIndex} setIndex={step.setIndex} />
     {step.outcome?.status === 'skipped' && <p className="skip-notice">Skipped{step.outcome.reason && <span className="skip-reason">{step.outcome.reason}</span>}</p>}
     <form onSubmit={event => {
       event.preventDefault()

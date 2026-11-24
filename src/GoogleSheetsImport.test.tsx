@@ -33,10 +33,10 @@ const click = (name: string | RegExp) => fireEvent.click(button(name))
 const change = (label: string, value: string) => fireEvent.change(screen.getByLabelText(label), { target: { value } })
 const valueOf = (label: string) => (screen.getByLabelText(label) as HTMLInputElement).value
 
-async function selectDateAndDay(day: RegExp, value = date) {
+async function selectDateAndDay(day: '1' | '2', value = date) {
   await waitFor(() => expect(button(importAction).disabled).toBe(false))
   change('Workout date', value)
-  click(day)
+  change('Workout weekday', day)
 }
 
 function reviewSheet(carryNotes = false) {
@@ -51,7 +51,7 @@ test('validates paste, previews the destination and targets, and saves edits onl
   const store = workoutStore()
   const completed = await store.complete(createSession(demoPlan, date))
   const first = render(<App store={store} />)
-  await selectDateAndDay(/Tue\s*No plan/)
+  await selectDateAndDay('2')
   click(importAction)
   change('Paste Google Sheets cells', 'Incomplete row')
   click('Preview import')
@@ -94,16 +94,16 @@ test('validates paste, previews the destination and targets, and saves edits onl
 
   first.unmount()
   render(<App store={store} />)
-  await selectDateAndDay(/Tue\s*Imported/)
-  expect(screen.getByRole('heading', { name: 'Imported workout' })).toBeDefined()
+  await selectDateAndDay('2')
+  expect(screen.getByRole('heading', { name: /Imported workout/ })).toBeDefined()
   expect(screen.getByText(formatSet({ ...target, pounds: 48.5 }))).toBeDefined()
   change('Workout date', otherDate)
   expect(screen.getByRole('heading', { name: 'No workout planned' })).toBeDefined()
   change('Workout date', date)
-  click(/Mon\s*Strength/)
+  change('Workout weekday', '1')
   expect(screen.getByRole('heading', { name: 'DEMO Monday' })).toBeDefined()
-  click(/Tue\s*Imported/)
-  click("Edit Day's Workout")
+  change('Workout weekday', '2')
+  click('Edit this date')
   expect(valueOf('Exercise 1 name')).toBe('Rear-foot elevated split squat')
   click('Cancel')
   click('Start Workout')
@@ -127,7 +127,7 @@ test.each([false, true])('Actual values start a fresh draft with carry notes=%s 
   const store = workoutStore()
   const completed = await store.complete(createSession(demoPlan, date))
   const first = render(<App store={store} />)
-  await selectDateAndDay(/Mon\s*Strength/)
+  await selectDateAndDay('1')
   click(importAction)
   change('Paste Google Sheets cells', sheet)
   click('Preview import')
@@ -144,11 +144,11 @@ test.each([false, true])('Actual values start a fresh draft with carry notes=%s 
   expect(valueOf('DB Split Squat set 1 pounds')).toBe('99')
   expect(screen.queryByText('Slow down') !== null).toBe(carryNotes)
   click('Confirm import')
-  await screen.findByRole('heading', { name: 'Imported workout' })
+  await screen.findByRole('heading', { name: /Imported workout/ })
   first.unmount()
 
   render(<App store={store} />)
-  await selectDateAndDay(/Mon\s*Imported/)
+  await selectDateAndDay('1')
   click('Start Workout')
   expect(valueOf('DB Split Squat set 1 pounds')).toBe('')
   fireEvent.click(screen.getByText('Exercise feedback'))
@@ -168,7 +168,7 @@ test.each([false, true])('Actual values start a fresh draft with carry notes=%s 
 test('cancels reviewed imports, protects recovered drafts, and rechecks active sessions at confirmation', async () => {
   const store = workoutStore()
   const first = render(<App store={store} />)
-  await selectDateAndDay(/Mon\s*Strength/)
+  await selectDateAndDay('1')
   reviewSheet(true)
   click('Cancel')
   expect(screen.getByRole('dialog', { name: 'Discard unsaved editor changes?' })).toBeDefined()
@@ -198,7 +198,7 @@ test('cancels reviewed imports, protects recovered drafts, and rechecks active s
   expect(button(importAction).disabled).toBe(true)
   expect(await store.list()).toEqual([active])
   expect(await store.plans()).toEqual([demoPlan])
-  click(/Tue\s*No plan/)
+  change('Workout weekday', '2')
   expect(button(importAction).disabled).toBe(false)
   reviewSheet()
   click('Confirm import')
@@ -209,7 +209,7 @@ test('cancels reviewed imports, protects recovered drafts, and rechecks active s
 test('a reviewed reimport replaces only its one-time plan and rejects a stale confirmation', async () => {
   const store = workoutStore()
   render(<App store={store} />)
-  await selectDateAndDay(/Mon\s*Strength/)
+  await selectDateAndDay('1')
   reviewSheet(true)
   click('Confirm import')
   await screen.findByText(`Workout plan imported for Mon · ${date}.`)

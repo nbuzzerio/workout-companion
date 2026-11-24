@@ -1,4 +1,4 @@
-import { createSession, isStandardPerformance, performanceSchema, plannedSets, type ExerciseFeedback, type Guidance, type Performance, type Plan, type Session } from './workouts'
+import { createSession, isStandardPerformance, performanceSchema, plannedSets, type ExerciseFeedback, type Guidance, type Performance, type Plan, type Session } from './workouts.ts'
 
 export function startGuidedWorkout(plan: Plan, date: string): Session {
   const session = createSession(plan, date)

@@ -1,9 +1,11 @@
 import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import { SessionStore } from './storage'
-import { assertDate, demoPlan, formatSet, isStandardPerformance, plannedSets, sessionWeekday, validateSession, type PlanExercise, type Session, type Plan } from './workouts'
+import { assertDate, createPlan, demoPlan, formatSet, isStandardPerformance, plannedSets, sessionWeekday, validateSession, type PlanExercise, type Session, type Plan } from './workouts'
 import { draftKey, getGuide, guideSteps, readActual, recordSet, recoverLegacyDraft, setActual, startGuidedWorkout, type ResultCorrection, type WorkoutDraft } from './guided-workout'
 import { GuidedWorkout } from './GuidedWorkout'
 import { DayWorkoutEditor } from './DayWorkoutEditor'
+import { ExerciseProgression } from './ExerciseProgression'
+import { earlierWorkouts } from './exercise-progression'
 import { GoogleSheetsImport } from './GoogleSheetsImport'
 import type { SheetsExercise } from './sheets-import'
 import { RecordedResultsEditor } from './RecordedResultsEditor'
@@ -13,19 +15,18 @@ import { AppearanceSetting } from './AppearanceSetting'
 import { ConfirmationDialog, type RequestConfirmation } from './ConfirmationDialog'
 import { SyncStore } from './sync-store'
 import { same } from './sync'
+import { WeeklyPlanner } from './WeeklyPlanner'
+import { WeekReusePreview } from './WeekReusePreview'
+import { buildWeek, dayFor, hasTargets, matchesWorkout, moveDate, weekdays, workoutStatus, type WeekDay, type WeekReuseReview } from './weekly-planning'
 import './App.css'
 
 const defaultStore = new SessionStore()
-const weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-const days = weekdays.map(day => day.slice(0, 3))
-function dayFor(weekday = 1) {
-  return days[(weekday + 6) % 7]
-}
+const weekOrder = [1, 2, 3, 4, 5, 6, 0] as const
 
 const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` }
 type ImportDestination = { date: string; weekday: Plan['weekday']; previous?: Plan }
-type Editor = { kind: 'plan'; plan: Plan } | { kind: 'results'; session: Session }
-  | ({ kind: 'sheets' } & ImportDestination) | { kind: 'import'; plan: Plan; previous?: Plan }
+type Editor = { kind: 'plan'; plan: Plan } | { kind: 'schedule'; plan: Plan; template?: Plan } | { kind: 'results'; session: Session }
+  | ({ kind: 'sheets' } & ImportDestination) | { kind: 'import'; plan: Plan; previous?: Plan } | { kind: 'reuse'; initialDate: string }
 
 function readRecovery(): { draft?: WorkoutDraft; error: string } {
   try {
@@ -58,7 +59,7 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
   const [initialRecovery] = useState(readRecovery)
   const [recoveryError, setRecoveryError] = useState(initialRecovery.error)
   const [date, setDate] = useState(() => initialRecovery.draft?.session.date ?? today())
-  const [day, setDay] = useState('Mon')
+  const [weekday, setWeekday] = useState<Plan['weekday']>(demoPlan.weekday)
   const [records, setRecords] = useState<Session[]>([])
   const [plans, setPlans] = useState<Plan[]>([demoPlan])
   const [planId, setPlanId] = useState(demoPlan.id)
@@ -82,8 +83,8 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
     const linked = savedPlans.find(plan => plan.id === restored.planId)
     setDraft(saved ? { session: saved } : recovered)
     setDate(restored.date)
-    if (linked && !linked.workoutDate) setPlanId(linked.id)
-    setDay(dayFor(sessionWeekday(restored, linked)))
+    if (linked) setPlanId(linked.id)
+    setWeekday(sessionWeekday(restored, linked))
     setDirty(!saved)
     setMessage(saved ? 'Reopened saved workout.' : 'Recovered draft on this device.')
     if (saved) {
@@ -101,10 +102,10 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
 
   useEffect(() => {
     let active = true
-    const refreshSaved = () => { void store.list().then(rows => {
+    const refreshSaved = () => { void Promise.all([store.list(), store.plans()]).then(([rows, savedPlans]) => {
       if (!active) return
       setRecords(rows)
-      void store.plans().then(p => { if (active) setPlans(p) }).catch(() => {})
+      setPlans(savedPlans)
       refreshOpenSession(rows)
     }).catch(() => {}) }
     window.addEventListener('workout-storage', refreshSaved)
@@ -208,8 +209,9 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
   function reopen(saved: Session) {
     const linked = plans.find(plan => plan.id === saved.planId)
     setDraft({ session: saved })
-    if (linked && !linked.workoutDate) setPlanId(linked.id)
-    setDay(dayFor(sessionWeekday(saved, linked)))
+    setDate(saved.date)
+    if (linked) setPlanId(linked.id)
+    setWeekday(sessionWeekday(saved, linked))
     setMessage('Reopened saved session.')
     setError('')
   }
@@ -256,6 +258,44 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
     })
   }
 
+  function scheduleWorkout(template?: Plan) {
+    try {
+      assertDate(date)
+      const plan = createPlan({
+        name: template?.name ?? 'Workout',
+        weekday, workoutDate: date, demo: template?.demo ?? false, exercises: template?.exercises ?? [],
+      })
+      openEditor({ kind: 'schedule', plan, template })
+    } catch (error) { setError((error as Error).message) }
+  }
+
+  function saveScheduledWorkout(plan: Plan, exercises: PlanExercise[], template?: Plan) {
+    void saveEditor(async () => {
+      const recovery = readRecovery()
+      if (recovery.error) throw new Error(recovery.error)
+      if (recovery.draft) throw new Error('A workout draft is open. Save or discard it before scheduling.')
+      const saved = await store.schedulePlan({ ...plan, exercises }, template)
+      setPlans(plans => [...plans.filter(plan => plan.id !== saved.id), saved])
+      setPlanId(saved.id)
+      setMessage(`Workout plan saved for ${saved.workoutDate}.`)
+    })
+  }
+
+  function confirmWeekReuse(review: WeekReuseReview) {
+    void saveEditor(async () => {
+      const recovery = readRecovery()
+      if (recovery.error) throw new Error(recovery.error)
+      if (recovery.draft) throw new Error('A workout draft is open. Save or discard it before copying plans.')
+      const copies = await store.reuseWeek(review)
+      setPlans(plans => [...plans.filter(plan => !copies.some(copy => copy.id === plan.id)), ...copies])
+      const first = copies.find(hasTargets) ?? copies[0]
+      setDate(first.workoutDate!)
+      setWeekday(first.weekday)
+      setPlanId(first.id)
+      setMessage(`Copied ${copies.length} ${copies.length === 1 ? 'plan' : 'plans'} to the week of ${review.destinationStart}.`)
+    })
+  }
+
   function reviewImport(destination: ImportDestination, exercises: SheetsExercise[]) {
     const { date, weekday, previous } = destination
     const plan: Plan = {
@@ -280,6 +320,7 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
       if (recovery.draft) throw new Error('A workout draft is open. Save or discard it before importing.')
       const saved = await store.saveImportedPlan({ ...plan, exercises }, previous)
       setPlans(plans => [...plans.filter(plan => plan.id !== saved.id), saved])
+      setPlanId(saved.id)
       setMessage(`Workout plan imported for ${dayFor(saved.weekday)} · ${saved.workoutDate}.`)
     })
   }
@@ -303,25 +344,53 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
   }
 
   const weeklyPlans = plans.filter(plan => !plan.workoutDate)
-  const weeklyPlan = weeklyPlans.find(plan => plan.id === planId) ?? weeklyPlans[0]
+  const weeklyForDay = weeklyPlans.filter(plan => plan.weekday === weekday)
+  const weeklyPlan = weeklyForDay.find(plan => plan.id === planId) ?? weeklyForDay[0]
   const datePlans = plans.filter(plan => plan.workoutDate === date)
-  const datePlan = datePlans.find(plan => dayFor(plan.weekday) === day)
+  const datedForDay = datePlans.filter(plan => plan.weekday === weekday)
+  const datePlan = datedForDay.find(plan => plan.id === planId) ?? datedForDay[0]
   const plan = datePlan ?? weeklyPlan
+  const day = dayFor(weekday)
   const sessionPlan = session && plans.find(p => p.id === session.planId)
   const sessionDay = session && dayFor(sessionWeekday(session, sessionPlan))
   const showSession = Boolean(!editor && draft && (!loading || dirty) && (day === sessionDay || loading))
-  const available = plan && day === dayFor(plan.weekday)
-  const hasSets = plan?.exercises.some(exercise => plannedSets(exercise).length)
+  const hasSets = plan && hasTargets(plan)
   const activeForDay = records.find(row => row.date === date && row.status === 'active'
-    && dayFor(sessionWeekday(row, plans.find(plan => plan.id === row.planId))) === day)
-  const active = datePlan ? activeForDay : plan && records.find(row => row.planId === plan.id && row.demo === plan.demo && row.date === date && row.status === 'active')
+    && sessionWeekday(row, plans.find(plan => plan.id === row.planId)) === weekday)
+  const active = plan && (records.find(row => row.status === 'active' && matchesWorkout(row, plan, date)) ?? (datePlan && activeForDay))
   const importBlocked = activeForDay ? 'Resume and finish the active workout for this date and day before importing.'
     : draft ? 'Return to the open workout before importing.' : ''
   const importing = editor?.kind === 'sheets' || editor?.kind === 'import'
-  const previous = session && records.find(row => row.planId === session.planId && row.demo === session.demo && row.date < session.date && row.status === 'completed')
-  const week = <nav className="week" aria-label="Weekly day selector">{days.map(d => <button key={d} disabled={busy} aria-pressed={day === d} onClick={() => setDay(d)}>{d}<small>{
-    datePlans.some(plan => dayFor(plan.weekday) === d) ? 'Imported' : d === (sessionDay ?? (weeklyPlan && dayFor(weeklyPlan.weekday))) ? 'Strength' : 'No plan'
+  const historyPlan = editor && 'plan' in editor ? editor.plan : plan
+  const historyDate = showSession ? session?.date : historyPlan?.workoutDate ?? date
+  const historyDemo = showSession ? session?.demo : historyPlan?.demo
+  const history = earlierWorkouts(records, historyDate, historyDemo)
+  const sessionDays = <nav className="week" aria-label="Weekly day selector">{weekOrder.map(value => <button key={value} disabled={busy} aria-pressed={weekday === value} onClick={() => setWeekday(value)}>{dayFor(value)}<small>{
+    datePlans.some(plan => plan.weekday === value) ? 'Dated' : dayFor(value) === sessionDay ? 'Strength' : 'No plan'
   }</small></button>)}</nav>
+  const currentDate = today()
+  const weekAnchor = moveDate(date, 0) ? date : currentDate
+  const selectedWeek = useMemo(() => buildWeek(weekAnchor, plans, records), [weekAnchor, plans, records])
+
+  function selectCalendarDay(entry: WeekDay) {
+    const training = entry.workouts.filter(workout => workout.status !== 'Rest day')
+    const options = training.length ? training : entry.workouts
+    const workout = options.find(({ plan }) => plan.workoutDate && plan.id === planId)
+      ?? options.find(({ plan }) => plan.workoutDate && plan.weekday === entry.weekday)
+      ?? options.find(({ plan }) => plan.workoutDate)
+      ?? options.find(({ plan }) => plan.id === planId)
+      ?? options[0]
+    setDate(entry.date)
+    setWeekday(workout?.plan.weekday ?? entry.weekday)
+    if (workout) setPlanId(workout.plan.id)
+    setMessage('')
+    setError('')
+  }
+
+  function navigateWeek(date: string) {
+    const entry = buildWeek(date, plans, records).find(day => day.date === date)
+    if (entry) selectCalendarDay(entry)
+  }
   const status = <p role="status" aria-live="polite">{message || 'Confirm a save to add your workout to local history.'}</p>
 
   return <main className={showSession ? 'runner runner-active' : 'runner'}>
@@ -333,20 +402,27 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
     {confirmation && <ConfirmationDialog {...confirmation} onDismiss={() => setConfirmation(undefined)} />}
     <PwaStatus canReload={!dirty && !editorDirty && !busy && !loading && !recoveryError} />
     {!showSession && !importing && (session?.demo ?? plan?.demo) && <aside className="demo"><strong>DEMO workspace</strong><span>Practice sessions use sample data. You can choose any workout date.</span></aside>}
-    {!showSession && !editor && week}
+    {!editor && !draft && <WeeklyPlanner week={selectedWeek} selectedDate={date} today={currentDate}
+      disabled={busy || loading} onSelect={selectCalendarDay} onNavigate={navigateWeek}
+      onReuse={() => openEditor({ kind: 'reuse', initialDate: weekAnchor })} />}
+    {!showSession && !editor && draft && sessionDays}
     <div className="workspace">
       <section className={!editor && !showSession && datePlan ? 'dated-plan' : undefined}
         aria-label={editor?.kind === 'sheets' ? 'Google Sheets import' : editor ? 'Workout editor' : showSession ? 'Current session' : 'Workout plan'}>
-        {editor?.kind === 'sheets' ? <GoogleSheetsImport date={editor.date} weekday={weekdays[(editor.weekday + 6) % 7]} replacing={Boolean(editor.previous)}
+        {editor?.kind === 'sheets' ? <GoogleSheetsImport date={editor.date} weekday={weekdays[editor.weekday]} replacing={Boolean(editor.previous)}
           onChange={editorActions.onChange} onCancel={editorActions.onCancel} onReview={workout => reviewImport(editor, workout)} />
-          : editor?.kind === 'import' ? <DayWorkoutEditor {...editorActions} plan={editor.plan} weekday={dayFor(editor.plan.weekday)}
+          : editor?.kind === 'reuse' ? <WeekReusePreview initialDate={editor.initialDate} plans={plans} sessions={records}
+            busy={busy} error={error} onCancel={closeEditor} onChange={() => setError('')} onConfirm={confirmWeekReuse} />
+          : editor?.kind === 'import' ? <DayWorkoutEditor {...editorActions} plan={editor.plan} weekday={dayFor(editor.plan.weekday)} history={history}
             importing replacing={Boolean(editor.previous)} onSave={exercises => confirmImport(editor.plan, exercises, editor.previous)} />
-          : editor?.kind === 'plan' ? <DayWorkoutEditor {...editorActions} plan={editor.plan} weekday={dayFor(editor.plan.weekday)}
+          : editor?.kind === 'plan' ? <DayWorkoutEditor {...editorActions} plan={editor.plan} weekday={dayFor(editor.plan.weekday)} history={history}
           onSave={exercises => savePlan(editor.plan, exercises)} />
+          : editor?.kind === 'schedule' ? <DayWorkoutEditor {...editorActions} plan={editor.plan} weekday={dayFor(editor.plan.weekday)} history={history}
+            scheduling={editor.template ? 'override' : 'new'} onSave={exercises => saveScheduledWorkout(editor.plan, exercises, editor.template)} />
           : editor?.kind === 'results' ? <RecordedResultsEditor {...editorActions} session={editor.session}
             onSave={corrections => saveCorrections(editor.session, corrections)} />
           : showSession && draft && sessionDay ? <>
-          <GuidedWorkout key={draft.session.id} draft={draft} day={sessionDay} previous={previous} busy={busy || loading} error={error}
+          <GuidedWorkout key={draft.session.id} draft={draft} day={sessionDay} history={history} busy={busy || loading} error={error}
             onChange={keepDraft} onError={setError} onFinish={() => persist(true)} />
           <div className="actions session-actions">
             {draft.session.status === 'active' && <button disabled={busy || loading} onClick={() => persist(false)}>Save session</button>}
@@ -357,15 +433,28 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
           <div className="session-status">{status}</div>
         </> : <>
           <div className="plan-heading">
-            <div><p className="eyebrow">{day.toUpperCase()} / {datePlan ? 'ONE-TIME PLAN' : available ? 'WORKOUT PLAN' : 'UNSCHEDULED'}</p>
-              <h2>{datePlan ? 'Imported workout' : available ? plan.name : 'No workout planned'}</h2></div>
-            <label>Workout date<input type="date" value={date} disabled={dirty || busy} onChange={e => { setDate(e.target.value); setDraft(undefined); setMessage('') }} /></label>
+            <div><p className="eyebrow">{day.toUpperCase()} / {datePlan ? 'ONE-TIME PLAN' : plan ? 'RECURRING PLAN' : 'REST DAY'}</p>
+              <h2>{plan?.name ?? 'No workout planned'}</h2>
+              {date && plan && <p className="plan-progress">{workoutStatus(plan, date, records)}</p>}</div>
+            <div className="plan-date-controls">
+              <label>Workout date<input type="date" value={date} disabled={dirty || busy} onChange={e => {
+                setDate(e.target.value); setDraft(undefined); setMessage(''); setError('')
+              }} /></label>
+              {!draft && <label>Workout weekday<select value={weekday} disabled={busy} onChange={e => {
+                setWeekday(Number(e.target.value) as Plan['weekday']); setMessage(''); setError('')
+              }}>{weekOrder.map(value => <option key={value} value={value}>{weekdays[value]}</option>)}</select></label>}
+            </div>
           </div>
-          {!datePlan && weeklyPlans.length > 1 && <label className="plan-picker">Saved plan<select value={weeklyPlan?.id} disabled={dirty || busy} onChange={e => {
-            setPlanId(e.target.value); setDraft(undefined); setDay(dayFor(weeklyPlans.find(p => p.id === e.target.value)?.weekday)); setMessage('')
-          }}>{weeklyPlans.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>}
+          {datedForDay.length > 1 && <label className="plan-picker">Dated workout<select value={datePlan?.id} disabled={dirty || busy} onChange={e => {
+            setPlanId(e.target.value); setMessage(''); setError('')
+          }}>{datedForDay.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>}
+          {!datePlan && weeklyPlans.length > 1 && <label className="plan-picker">Saved plan<select value={weeklyPlan?.id ?? ''} disabled={dirty || busy} onChange={e => {
+            const selected = weeklyPlans.find(p => p.id === e.target.value)
+            if (selected) { setPlanId(selected.id); setDraft(undefined); setWeekday(selected.weekday); setMessage(''); setError('') }
+          }}>{!weeklyPlan && <option value="" disabled>Choose a recurring workout</option>}
+            {weeklyPlans.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>}
           <div className="actions plan-actions">
-            {!draft && available && (active || hasSets) && <button className="primary" disabled={!date || busy || loading || Boolean(recoveryError)} onClick={() => {
+            {!draft && plan && (active || hasSets) && <button className="primary" disabled={!date || busy || loading || Boolean(recoveryError)} onClick={() => {
               if (active) reopen(active)
               else {
                 try {
@@ -375,21 +464,32 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
                 } catch (error) { setError((error as Error).message) }
               }
             }}>{active ? 'Resume Workout' : 'Start Workout'}</button>}
-            {!draft && available && <button disabled={busy || loading} onClick={() => openEditor({ kind: 'plan', plan })}>Edit Day's Workout</button>}
-            <button className={!available || !hasSets ? 'primary' : undefined} disabled={!date || busy || loading || Boolean(importBlocked || recoveryError)}
+            {!draft && <button className={!hasSets && !active ? 'primary' : undefined}
+              disabled={!date || busy || loading || (!datePlan && Boolean(activeForDay || recoveryError))}
+              onClick={() => datePlan ? openEditor({ kind: 'plan', plan: datePlan }) : scheduleWorkout(weeklyPlan)}>
+              {plan && (datePlan || hasSets) ? 'Edit this date' : 'Schedule workout'}
+            </button>}
+            {!draft && weeklyPlan && !datePlan && <button disabled={busy || loading} onClick={() => openEditor({ kind: 'plan', plan: weeklyPlan })}>Edit recurring workout</button>}
+            <button disabled={!date || busy || loading || Boolean(importBlocked || recoveryError)}
               aria-describedby={importBlocked ? 'import-blocked' : undefined} onClick={() => {
                 try {
                   assertDate(date)
-                  const weekday = ((days.indexOf(day) + 1) % 7) as Plan['weekday']
                   openEditor({ kind: 'sheets', date, weekday, previous: datePlan })
                 } catch (error) { setError((error as Error).message) }
               }}>Import from Google Sheets</button>
           </div>
           {importBlocked && <p className="editor-context" id="import-blocked">{importBlocked}</p>}
-          {available && !hasSets && <p>This plan has no sets.</p>}
-          {available && (datePlan || hasSets) && <ul className="plan-preview">{plan.exercises.filter(exercise => datePlan || plannedSets(exercise).length).map(exercise => <li key={exercise.id}>
-            <strong>{exercise.name}</strong><span>{plannedSets(exercise).map(formatSet).join(' · ') || 'No targets'}</span>
-          </li>)}</ul>}
+          {plan && !hasSets && <p>This plan has no sets.</p>}
+          {plan && plan.exercises.length > 0 && (datePlan || hasSets) && <ul className="plan-preview">{plan.exercises.map((exercise, index) => {
+            const targets = plannedSets(exercise)
+            if (!datePlan && !targets.length) return null
+            return <li key={exercise.id}>
+              <strong>{exercise.name}</strong>
+              {targets.length > 0 && <small className="progression-caption">Planned targets</small>}
+              <span>{targets.map(formatSet).join(' · ') || 'No targets'}</span>
+              {!loading && <ExerciseProgression history={history} exercises={plan.exercises} exerciseIndex={index} />}
+            </li>
+          })}</ul>}
         </>}
       </section>
       <aside className="history" aria-label="Saved sessions">
@@ -402,7 +502,7 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
         <button disabled={busy || loading || Boolean(editor)} onClick={() => void refresh()}>Retry storage / refresh history</button>
       </aside>
     </div>
-    {showSession && week}
+    {showSession && sessionDays}
     {!showSession && !editor && <footer className="save-status">{status}{error && <p role="alert">{error}</p>}</footer>}
   </main>
 }

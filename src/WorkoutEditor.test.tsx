@@ -17,7 +17,7 @@ const button = (name: string | RegExp) => screen.getByRole('button', { name }) a
 const click = (name: string | RegExp) => fireEvent.click(button(name))
 const change = (label: string, value: string) => fireEvent.change(screen.getByLabelText(label), { target: { value } })
 const valueOf = (label: string) => (screen.getByLabelText(label) as HTMLInputElement).value
-const editDay = "Edit Day's Workout"
+const editDay = 'Edit recurring workout'
 
 async function ready(name: string | RegExp) {
   await waitFor(() => expect(button(name).disabled).toBe(false))
@@ -76,10 +76,10 @@ test('bulk edits a weekly day and reloads typed and freeform targets without cre
   first.unmount()
   render(<App store={store} />)
   await ready(editDay)
-  click(/Tue\s*No plan/)
+  change('Workout weekday', '2')
   expect(screen.queryByRole('button', { name: editDay })).toBeNull()
   change('Saved plan', real.id)
-  expect(button(/Thu\s*Strength/).getAttribute('aria-pressed')).toBe('true')
+  expect(valueOf('Workout weekday')).toBe('4')
   change('Saved plan', demo.id)
   click('Start Workout')
   expect(screen.getByRole('heading', { name: 'Single-leg extension' })).toBeDefined()

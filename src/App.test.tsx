@@ -214,9 +214,10 @@ test('the original recovery format and saved actuals reopen with demo history is
   draft.exercises[0].sets[0] = { kind: 'weight', pounds: 57, reps: 9 }
   localStorage.setItem(draftKey, JSON.stringify(draft))
   render(<App store={store} />)
-  await screen.findByText(/2026-11-01 · 99 lb/)
+  const progression = await screen.findByLabelText('Recent performance for DB Deadlift')
+  expect(progression.textContent).toContain('Last recorded set 1 · 99 lb × 3 · 2026-11-01')
   expect(valueOf('DB Deadlift set 1 pounds')).toBe('57')
-  expect(screen.queryByText(/2026-11-02 · 99 lb/)).toBeNull()
+  expect(screen.queryByText('2026-11-02', { exact: true })).toBeNull()
   expect(await store.list(draft.date)).toEqual([])
 })
 

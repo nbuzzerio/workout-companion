@@ -48,7 +48,7 @@ export interface SessionExercise extends Exercise { feedback?: ExerciseFeedback 
 export interface Plan { version: 1; id: string; name: string; weekday: 0 | 1 | 2 | 3 | 4 | 5 | 6; demo: boolean; exercises: PlanExercise[]; workoutDate?: string }
 export interface Session { version: 1; id: string; planId: string; planWeekday?: Plan['weekday']; actualsStartEmpty?: true; date: string; demo: boolean; revision: number; status: 'active' | 'completed'; exercises: SessionExercise[]; guidance?: Guidance }
 export function sessionWeekday(session: Session, plan?: Plan) {
-  return session.planWeekday ?? plan?.weekday ?? new Date(`${session.date}T12:00:00Z`).getUTCDay()
+  return session.planWeekday ?? plan?.weekday ?? new Date(`${session.date}T12:00:00Z`).getUTCDay() as Plan['weekday']
 }
 export const plannedSets = (exercise: Exercise) => exercise.prescription ?? exercise.sets
 export function isStandardPerformance(set: Performance): set is StandardPerformance {

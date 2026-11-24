@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { ExerciseFeedbackSummary } from './ExerciseFeedback'
+import { ExerciseProgression } from './ExerciseProgression'
 import { PerformanceFields } from './PerformanceFields'
 import { readActual } from './guided-workout'
-import { isStandardPerformance, plannedSets, type PlanExercise, type Performance, type Plan } from './workouts'
+import { isStandardPerformance, plannedSets, type PlanExercise, type Performance, type Plan, type Session } from './workouts'
 
 const targetDefaults = {
   weight: { kind: 'weight', pounds: 0, reps: 10 },
@@ -37,9 +38,11 @@ function toExercise({ exercise, name, targets }: ExerciseDraft, index: number): 
 
 interface Props {
   plan: Plan
+  history: readonly Session[]
   weekday: string
   importing?: boolean
   replacing?: boolean
+  scheduling?: 'new' | 'override'
   busy: boolean
   error: string
   onChange: () => void
@@ -48,12 +51,13 @@ interface Props {
   onCancel: () => void
 }
 
-export function DayWorkoutEditor({ plan, weekday, importing, replacing, busy, error, onChange, onError, onSave, onCancel }: Props) {
+export function DayWorkoutEditor({ plan, history, weekday, importing, replacing, scheduling, busy, error, onChange, onError, onSave, onCancel }: Props) {
   const [exercises, setExercises] = useState<ExerciseDraft[]>(() => plan.exercises.map(exercise => ({
     exercise, name: exercise.name, targets: plannedSets(exercise).map(base => ({ id: crypto.randomUUID(), base })),
   })))
   const heading = useRef<HTMLHeadingElement>(null)
   useEffect(() => { heading.current?.focus() }, [])
+  const exerciseReferences = exercises.map(({ exercise, name }) => ({ id: exercise.id, name }))
 
   const edit = (next: ExerciseDraft[]) => { setExercises(next); onChange() }
   const update = (index: number, next: ExerciseDraft) => edit(exercises.map((item, i) => i === index ? next : item))
@@ -69,11 +73,11 @@ export function DayWorkoutEditor({ plan, weekday, importing, replacing, busy, er
     try { onSave(exercises.map(toExercise)) }
     catch (error) { onError((error as Error).message) }
   }}>
-    <h2 ref={heading} tabIndex={-1}>{importing ? 'Review imported workout' : "Edit Day's Workout"}</h2>
+    <h2 ref={heading} tabIndex={-1}>{importing ? 'Review imported workout' : scheduling === 'new' ? 'Schedule workout' : "Edit Day's Workout"}</h2>
     <p className="editor-context">{plan.workoutDate
       ? <>{weekday} · {plan.workoutDate}. {importing
         ? (replacing ? 'Confirming will replace the one-time plan for this date and day.' : 'Confirming will save a one-time plan for this date and day.')
-        : 'Changes apply to this one-time plan.'}</>
+        : <>Changes apply to this date. A plan with no sets appears as a rest day.</>}</>
       : <>{weekday} · {plan.name}. Changes apply to future workouts on this weekly plan. Use Exercise feedback in the guided workout to record RIR, mobility, and notes.</>}
     </p>
     <fieldset disabled={busy}>
@@ -90,6 +94,7 @@ export function DayWorkoutEditor({ plan, weekday, importing, replacing, busy, er
             </div>
           </div>
           {exercise.coachNotes && <ExerciseFeedbackSummary feedback={{ coachNotes: exercise.coachNotes }} />}
+          <ExerciseProgression history={history} exercises={exerciseReferences} exerciseIndex={index} />
           {targets.map(({ id, base, fields }, setIndex) => {
             const label = `${rowLabel} set ${setIndex + 1}`
             const editTarget = (next: TargetDraft) => update(index, { ...item, targets: targets.map((target, i) => i === setIndex ? next : target) })

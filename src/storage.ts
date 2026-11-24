@@ -1,8 +1,9 @@
-import { sessionWeekday, validateSession, type PlanExercise, type Plan, type Session } from './workouts'
+import { createPlan, sessionWeekday, validateSession, type PlanExercise, type Plan, type Session } from './workouts'
 import { correctCompletedResults, type ResultCorrection } from './guided-workout'
 import { planSchema, same } from './sync'
 import { allStores, openDatabase, request, transaction } from './database'
 import { enqueue } from './sync-store'
+import { reviewWeekReuse, type WeekReuseReview } from './weekly-planning'
 export { openDatabase } from './database'
 
 export class SessionStore {
@@ -28,20 +29,59 @@ export class SessionStore {
     return transaction(this.open, ['plans'], 'readonly', async tx => request(tx.objectStore('plans').getAll()) as Promise<Plan[]>)
   }
   async saveImportedPlan(plan: Plan, expected?: Plan): Promise<Plan> {
+    return this.saveDatedPlan(plan, 'importing', expected)
+  }
+  async schedulePlan(plan: Plan, template?: Plan): Promise<Plan> {
+    return this.saveDatedPlan(plan, 'scheduling', undefined, template)
+  }
+  async reuseWeek(expected: WeekReuseReview): Promise<Plan[]> {
+    const reviewed = structuredClone(expected)
+    return transaction(this.open, allStores, 'readwrite', async tx => {
+      const object = tx.objectStore('plans')
+      const plans = await request(object.getAll()) as Plan[]
+      const sessions = await request(tx.objectStore('sessions').getAll()) as Session[]
+      const current = reviewWeekReuse(reviewed.destinationStart, plans, sessions)
+      if (!current || !same(current, reviewed)) throw new Error('The weekly plan or saved workouts changed. Review the updated preview before copying.')
+
+      const copies = current.days.filter(day => !day.blockedBy).flatMap(({ destinationDate, workouts }) =>
+        workouts.map(({ name, weekday, demo, exercises }) => createPlan({
+          name, weekday, demo, workoutDate: destinationDate,
+          exercises: exercises.map(({ name, sets, prescription, musclesSource, coachNotes }) => ({
+            id: crypto.randomUUID(), name, sets,
+            ...(prescription !== undefined && { prescription }),
+            ...(musclesSource !== undefined && { musclesSource }),
+            ...(coachNotes !== undefined && { coachNotes }),
+          })),
+        })))
+      if (!copies.length) throw new Error('There are no plans available to copy into this week.')
+      if (copies.some(plan => !planSchema.safeParse(plan).success)) throw new Error('Check the exercise names and planned targets in the source week.')
+      for (const plan of copies) {
+        await request(object.add(plan))
+        await enqueue(tx, 'plan', plan)
+      }
+      return copies
+    })
+  }
+  private async saveDatedPlan(plan: Plan, action: 'importing' | 'scheduling', expected?: Plan, template?: Plan): Promise<Plan> {
     const saved = structuredClone(plan)
     const original = structuredClone(expected)
+    const source = structuredClone(template)
     if (!saved.workoutDate || !planSchema.safeParse(saved).success) throw new Error('Check the workout date, exercise names and planned targets.')
     return transaction(this.open, allStores, 'readwrite', async tx => {
       const object = tx.objectStore('plans')
       const plans = await request(object.getAll()) as Plan[]
       const prior = plans.find(plan => plan.id === saved.id)
-      if (!same(prior, original) || (prior && (prior.workoutDate !== saved.workoutDate || prior.weekday !== saved.weekday))) {
-        throw new Error('The plan for this date and day changed. Reopen the import to review the latest plan.')
+      const sameSlot = (plan: Plan) => plan.workoutDate === saved.workoutDate && plan.weekday === saved.weekday
+      if (!same(prior, original) || (prior ? !sameSlot(prior) : plans.some(sameSlot))) {
+        throw new Error('The plan for this date and day changed. Reopen it to review the latest plan.')
+      }
+      if (source && !same(plans.find(plan => plan.id === source.id), source)) {
+        throw new Error('The recurring plan changed. Reopen it to copy the latest plan.')
       }
       const sessions = await request(tx.objectStore('sessions').getAll()) as Session[]
       if (sessions.some(session => session.status === 'active' && session.date === saved.workoutDate
         && sessionWeekday(session, plans.find(plan => plan.id === session.planId)) === saved.weekday)) {
-        throw new Error('An active workout exists for this date and day. Resume and finish it before importing.')
+        throw new Error(`An active workout exists for this date and day. Resume and finish it before ${action}.`)
       }
       if (same(prior, saved)) return saved
       await request(object.put(saved))
