@@ -12,7 +12,7 @@ button, input { font: inherit; min-height: 44px; border: 1px solid #94a59a; bord
 button { color: #203d30; background: #fff; cursor: pointer; font-weight: 650; }
 button:hover:not(:disabled) { background: #e6eee7; }
 button:disabled { opacity: .55; cursor: default; }
-.week button { padding: 12px 2px; }
+.week button { padding: 12px 2px; overflow-wrap: anywhere; }
 small { display: block; font-size: .68rem; font-weight: 450; margin-top: 4px; }
 .week [aria-pressed="true"], .primary { color: #fff; background: #254d3b; border-color: #254d3b; }
 .primary:hover:not(:disabled) { background: #183b2c; }
@@ -56,7 +56,7 @@ fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
 .skip-actions { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; }
 .skip-actions button { border-color: transparent; padding-inline: 8px; color: #43584a; font-size: .86rem; }
 .skip-form { margin-top: 14px; }
-.guide-card textarea, .day-editor textarea { resize: vertical; display: block; margin-top: 5px; width: 100%; padding: 8px 10px; border: 1px solid #94a59a; border-radius: 8px; font: inherit; font-size: 1rem; color: #203d30; }
+.guide-card textarea, .day-editor textarea, .sheets-import textarea { resize: vertical; display: block; margin-top: 5px; width: 100%; padding: 8px 10px; border: 1px solid #94a59a; border-radius: 8px; font: inherit; font-size: 1rem; color: #203d30; }
 .set-target dd, .summary-exercise li > div { white-space: pre-wrap; }
 .skip-notice { font-size: .88rem; color: #70501a; }
 .skip-reason { display: block; white-space: pre-wrap; }
@@ -143,9 +143,40 @@ fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
 .editor-set p { margin: 0; font-size: .86rem; }
 .target-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 10px; }
 .target-fields select { display: block; margin-top: 5px; width: 100%; min-height: 48px; padding: 8px 9px; border: 1px solid #94a59a; border-radius: 8px; font: inherit; font-size: .9rem; color: #203d30; background: #fff; }
-.per-side { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; }
-.per-side input { width: 16px; min-height: 0; margin: 0; accent-color: #254d3b; }
+:is(.per-side, .import-options label, .import-note-option) { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; }
+:is(.per-side, .import-options label, .import-note-option) input { width: 16px; min-height: 0; margin: 0; accent-color: #254d3b; }
 .editor-actions { margin-top: 16px; }
+.sheets-import, .dated-editor, .dated-plan {
+  background: #fff; border: 1px solid #d4ded7; border-radius: 14px;
+  padding: clamp(12px, 3vw, 22px); overflow-wrap: anywhere;
+}
+.sheets-import textarea { background: #fff; min-height: 110px; }
+.import-dates { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); gap: 8px; }
+.import-dates div, .import-notice { margin: 0; padding: 10px 12px; border-radius: 8px; background: #f1f4f0; }
+.import-dates dt { font-size: .78rem; }
+.import-dates dd { margin: 2px 0 0; font-weight: 650; }
+.import-notice { background: #fff1bf; color: #63470d; margin-bottom: 8px; }
+.import-preview { margin-top: 20px; padding-top: 16px; border-top: 1px solid #d4ded7; }
+.import-options { display: flex; flex-wrap: wrap; column-gap: 16px; margin-top: 16px; }
+.import-options legend { font-size: .8rem; font-weight: 700; }
+.import-preview ol { margin-top: 4px; padding-left: 22px; color: #52625a; }
+.import-preview ol li { border: 0; padding: 2px 0; white-space: pre-wrap; }
+.dated-plan .plan-preview span { white-space: pre-wrap; }
+@media (max-width: 550px) {
+  .sheets-import .actions > button, .dated-editor .editor-actions > button { flex: 1 1 auto; }
+}
+@media (prefers-color-scheme: dark) {
+  :is(.sheets-import, .dated-editor, .dated-plan) { color-scheme: dark; background: #1d2b24; color: #e7efe9; border-color: #4b6254; }
+  :is(.sheets-import, .dated-editor, .dated-plan) :is(input, select, textarea, button) { background: #22392d; color: #e7efe9; border-color: #7a9384; }
+  :is(.sheets-import, .dated-editor, .dated-plan) .primary { background: #b2dec1; color: #173327; border-color: #b2dec1; }
+  :is(.sheets-import, .dated-editor, .dated-plan) button:hover:not(:disabled) { background: #385b49; color: #fff; }
+  :is(.sheets-import, .dated-editor, .dated-plan) :focus-visible { outline-color: #9bcaf5; }
+  .dated-editor .exercise, .import-dates div { background: #283d31; border-color: #4b6254; }
+  .import-notice { background: #423618; color: #ffe6a0; }
+  .import-preview, .dated-editor .editor-set, :is(.sheets-import, .dated-plan) .plan-preview li { border-color: #4b6254; }
+  :is(.sheets-import, .dated-editor, .dated-plan) :is(.editor-context, .eyebrow), .import-preview ol, :is(.sheets-import, .dated-plan) .plan-preview span { color: #cad9cf; }
+  :is(.sheets-import, .dated-editor) [role="alert"] { background: #442a28; color: #ffd4cc; }
+}
 .feedback-details { margin-top: 14px; padding-top: 10px; border-top: 1px solid #d4ded7; }
 .feedback-details summary { cursor: pointer; font-weight: 650; padding: 8px 0; }
 .exercise-feedback { display: grid; gap: 10px; margin-top: 8px; }

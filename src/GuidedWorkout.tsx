@@ -26,7 +26,8 @@ export function GuidedWorkout({ draft, day, previous, busy, error, onChange, onE
   useEffect(() => { heading.current?.focus() }, [session.id, guide.cursor, completed])
   const goBack = () => {
     try {
-      const current = step && fields ? recordSet(session, readActual(setActual(step) ?? step.target, fields), false) : session
+      const actual = step && setActual(step)
+      const current = step && fields ? recordSet(session, readActual(actual ?? step.target, fields, session.actualsStartEmpty && !actual), false) : session
       onChange({ session: movePrevious(current) })
     } catch (error) { onError((error as Error).message) }
   }
@@ -75,11 +76,13 @@ export function GuidedWorkout({ draft, day, previous, busy, error, onChange, onE
   const previousIndex = previous?.exercises.findIndex(item => item.id === exercise.id) ?? -1
   const prior = previous && previousIndex >= 0 ? getGuide(previous).sets[previousIndex][step.setIndex] : undefined
   const previousActual = prior && setActual(prior)
-  const actual = setActual(step) ?? step.target
+  const recorded = setActual(step)
+  const actual = recorded ?? step.target
+  const initiallyEmpty = session.actualsStartEmpty && !recorded
   const skipped = step.outcome?.status === 'skipped'
   function advance(forceRecord = false) {
     try {
-      const next = skipped && !fields && !forceRecord ? movePastSkipped(session) : recordSet(session, readActual(actual, fields), true)
+      const next = skipped && !fields && !forceRecord ? movePastSkipped(session) : recordSet(session, readActual(actual, fields, initiallyEmpty), true)
       onChange({ session: next })
     } catch (error) { onError((error as Error).message) }
   }
@@ -102,7 +105,7 @@ export function GuidedWorkout({ draft, day, previous, busy, error, onChange, onE
     }}>
       <fieldset disabled={busy}>
         <legend>Actual performance</legend>
-        <PerformanceFields performance={actual} label={`${exercise.name} set ${step.setIndex + 1}`} fields={fields}
+        <PerformanceFields performance={actual} label={`${exercise.name} set ${step.setIndex + 1}`} fields={fields} initiallyEmpty={initiallyEmpty}
           onChange={fields => onChange({ session, fields })} />
       </fieldset>
       {error && <p role="alert">{error}</p>}

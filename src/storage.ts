@@ -1,4 +1,4 @@
-import { validateSession, type Exercise, type Plan, type Session } from './workouts'
+import { sessionWeekday, validateSession, type PlanExercise, type Plan, type Session } from './workouts'
 import { correctCompletedResults, type ResultCorrection } from './guided-workout'
 import { planSchema, same } from './sync'
 import { allStores, openDatabase, request, transaction } from './database'
@@ -27,7 +27,29 @@ export class SessionStore {
   async plans(): Promise<Plan[]> {
     return transaction(this.open, ['plans'], 'readonly', async tx => request(tx.objectStore('plans').getAll()) as Promise<Plan[]>)
   }
-  async savePlan(expected: Plan, exercises: Exercise[]): Promise<Plan> {
+  async saveImportedPlan(plan: Plan, expected?: Plan): Promise<Plan> {
+    const saved = structuredClone(plan)
+    const original = structuredClone(expected)
+    if (!saved.workoutDate || !planSchema.safeParse(saved).success) throw new Error('Check the workout date, exercise names and planned targets.')
+    return transaction(this.open, allStores, 'readwrite', async tx => {
+      const object = tx.objectStore('plans')
+      const plans = await request(object.getAll()) as Plan[]
+      const prior = plans.find(plan => plan.id === saved.id)
+      if (!same(prior, original) || (prior && (prior.workoutDate !== saved.workoutDate || prior.weekday !== saved.weekday))) {
+        throw new Error('The plan for this date and day changed. Reopen the import to review the latest plan.')
+      }
+      const sessions = await request(tx.objectStore('sessions').getAll()) as Session[]
+      if (sessions.some(session => session.status === 'active' && session.date === saved.workoutDate
+        && sessionWeekday(session, plans.find(plan => plan.id === session.planId)) === saved.weekday)) {
+        throw new Error('An active workout exists for this date and day. Resume and finish it before importing.')
+      }
+      if (same(prior, saved)) return saved
+      await request(object.put(saved))
+      await enqueue(tx, 'plan', saved)
+      return saved
+    })
+  }
+  async savePlan(expected: Plan, exercises: PlanExercise[]): Promise<Plan> {
     const original = structuredClone(expected)
     const changes = structuredClone(exercises)
     return transaction(this.open, allStores, 'readwrite', async tx => {

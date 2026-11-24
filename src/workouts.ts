@@ -43,9 +43,13 @@ export type ExerciseFeedback = z.infer<typeof exerciseFeedbackSchema>
 // Version 1 sync accepts weight, machine and hold in sets. A richer plan
 // supplies its full prescription in the optional exercise field.
 export interface Exercise { id: string; name: string; sets: StandardPerformance[]; prescription?: Performance[]; musclesSource?: string }
+export interface PlanExercise extends Exercise { coachNotes?: string }
 export interface SessionExercise extends Exercise { feedback?: ExerciseFeedback }
-export interface Plan { version: 1; id: string; name: string; weekday: 0 | 1 | 2 | 3 | 4 | 5 | 6; demo: boolean; exercises: Exercise[] }
-export interface Session { version: 1; id: string; planId: string; planWeekday?: Plan['weekday']; date: string; demo: boolean; revision: number; status: 'active' | 'completed'; exercises: SessionExercise[]; guidance?: Guidance }
+export interface Plan { version: 1; id: string; name: string; weekday: 0 | 1 | 2 | 3 | 4 | 5 | 6; demo: boolean; exercises: PlanExercise[]; workoutDate?: string }
+export interface Session { version: 1; id: string; planId: string; planWeekday?: Plan['weekday']; actualsStartEmpty?: true; date: string; demo: boolean; revision: number; status: 'active' | 'completed'; exercises: SessionExercise[]; guidance?: Guidance }
+export function sessionWeekday(session: Session, plan?: Plan) {
+  return session.planWeekday ?? plan?.weekday ?? new Date(`${session.date}T12:00:00Z`).getUTCDay()
+}
 export const plannedSets = (exercise: Exercise) => exercise.prescription ?? exercise.sets
 export function isStandardPerformance(set: Performance): set is StandardPerformance {
   return set.kind === 'weight' || set.kind === 'machine' || set.kind === 'hold'
@@ -63,7 +67,10 @@ export function assertDate(date: string) {
 export function createPlan(input: Omit<Plan, 'id' | 'version'>): Plan { return { ...structuredClone(input), id: crypto.randomUUID(), version: 1 } }
 export function createSession(plan: Plan, date: string): Session {
   assertDate(date)
-  return { version: 1, id: crypto.randomUUID(), planId: plan.id, date, demo: plan.demo, revision: 0, status: 'active', exercises: structuredClone(plan.exercises) }
+  const exercises = structuredClone(plan.exercises).map(({ coachNotes, ...exercise }) => ({
+    ...exercise, ...(coachNotes && { feedback: { coachNotes } }),
+  }))
+  return { version: 1, id: crypto.randomUUID(), planId: plan.id, date, demo: plan.demo, revision: 0, status: 'active', exercises }
 }
 export function validateSession(s: Session) {
   if (s.version !== 1) throw new Error('Unsupported record version. Data retained.')

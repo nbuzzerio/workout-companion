@@ -6,7 +6,7 @@ import { SyncStore } from '../../src/sync-store'
 import { SyncEngine } from '../../src/sync-engine'
 import { SyncApi } from '../../src/sync-api'
 import { exchangeSchema, type Operation, type Space } from '../../src/sync'
-import { createSession, demoPlan } from '../../src/workouts'
+import { createSession, demoPlan, type Plan } from '../../src/workouts'
 import { recordSet, skipSets, startGuidedWorkout } from '../../src/guided-workout'
 let f: Fixture, space: Space
 beforeEach(async () => { f = await fixture(); space = f.space() })
@@ -87,6 +87,25 @@ test('guided targets, richer actuals, and skips round-trip through the version 1
   expect(await b.local.list()).toEqual([saved])
   expect((await a.store.summary()).pending).toBe(0)
   expect(saved.exercises.map(exercise => exercise.sets)).toEqual([[], [{ kind: 'machine', position: 'P12', reps: 10 }]])
+})
+
+test('one-time plans and fresh guided sessions round-trip through the version 1 service', async () => {
+  const a = await device(), b = await device()
+  const date = '2026-11-26'
+  const plan: Plan = {
+    version: 1, id: `sheets-${date}-2`, workoutDate: date, weekday: 2, name: 'Imported workout', demo: false,
+    exercises: [{ id: 'cooldown', name: 'Cooldown', sets: [], prescription: [{ kind: 'freeform', value: 'Two easy rounds' }], coachNotes: 'Keep an easy pace' }],
+  }
+  await a.local.ensurePlan(demoPlan)
+  const imported = await a.local.saveImportedPlan(plan)
+  const session = await a.local.save(startGuidedWorkout(imported, date))
+  await connect(a)
+  await connect(b)
+  expect(await b.local.plans()).toEqual([demoPlan, plan])
+  expect(await b.local.list()).toEqual([session])
+    expect(session.exercises[0].feedback).toEqual({ coachNotes: 'Keep an easy pace' })
+  expect(session.actualsStartEmpty).toBe(true)
+  expect((await a.store.summary()).pending).toBe(0)
 })
 
 test('lost HTTP response replays identical immutable operation and server applies only once', async () => {

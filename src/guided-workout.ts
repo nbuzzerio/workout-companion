@@ -4,7 +4,7 @@ export function startGuidedWorkout(plan: Plan, date: string): Session {
   const session = createSession(plan, date)
   const sets = session.exercises.map(exercise => plannedSets(exercise).map(target => ({ target })))
   for (const exercise of session.exercises) delete exercise.prescription
-  return applyGuide({ ...session, planWeekday: plan.weekday }, { cursor: 0, sets })
+  return applyGuide({ ...session, planWeekday: plan.weekday, ...(plan.workoutDate && { actualsStartEmpty: true }) }, { cursor: 0, sets })
 }
 
 export function recoverLegacyDraft(session: Session) {
@@ -138,11 +138,11 @@ export function actualFields(set: Performance): Field[] {
   return fields
 }
 
-export function readActual(base: Performance, edited?: Record<string, string>): Performance {
-  if (!edited) return base
+export function readActual(base: Performance, edited?: Record<string, string>, requireEntered = false): Performance {
+  if (!edited && !requireEntered) return base
   const actual = { ...base }
   for (const { name, value, inputMode } of actualFields(base)) {
-    const text = edited[name] ?? value
+    const text = edited?.[name] ?? (requireEntered ? '' : value)
     if (name === 'value') actual[name] = text
     else if (name === 'position') actual[name] = text.trim().toUpperCase()
     else if (inputMode === 'text') actual[name] = text.trim()

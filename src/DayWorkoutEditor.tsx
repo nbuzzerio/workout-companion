@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
+import { ExerciseFeedbackSummary } from './ExerciseFeedback'
 import { PerformanceFields } from './PerformanceFields'
 import { readActual } from './guided-workout'
-import { isStandardPerformance, plannedSets, type Exercise, type Performance, type Plan } from './workouts'
+import { isStandardPerformance, plannedSets, type PlanExercise, type Performance, type Plan } from './workouts'
 
 const targetDefaults = {
   weight: { kind: 'weight', pounds: 0, reps: 10 },
@@ -13,14 +14,14 @@ const targetDefaults = {
 } satisfies Record<Performance['kind'], Performance>
 
 interface TargetDraft { id: string; base: Performance; fields?: Record<string, string> }
-interface ExerciseDraft { exercise: Exercise; name: string; targets: TargetDraft[] }
+interface ExerciseDraft { exercise: PlanExercise; name: string; targets: TargetDraft[] }
 
 function newTarget(base: Performance = targetDefaults.weight): TargetDraft {
   // Validate newly added targets even if the default fields are untouched.
   return { id: crypto.randomUUID(), base, fields: {} }
 }
 
-function toExercise({ exercise, name, targets }: ExerciseDraft, index: number): Exercise {
+function toExercise({ exercise, name, targets }: ExerciseDraft, index: number): PlanExercise {
   if (!name.trim()) throw new Error(`Enter a name for exercise ${index + 1}.`)
   const sets = targets.map(({ base, fields }, index) => {
     try { return readActual(base, fields) }
@@ -37,15 +38,17 @@ function toExercise({ exercise, name, targets }: ExerciseDraft, index: number): 
 interface Props {
   plan: Plan
   weekday: string
+  importing?: boolean
+  replacing?: boolean
   busy: boolean
   error: string
   onChange: () => void
   onError: (message: string) => void
-  onSave: (exercises: Exercise[]) => void
+  onSave: (exercises: PlanExercise[]) => void
   onCancel: () => void
 }
 
-export function DayWorkoutEditor({ plan, weekday, busy, error, onChange, onError, onSave, onCancel }: Props) {
+export function DayWorkoutEditor({ plan, weekday, importing, replacing, busy, error, onChange, onError, onSave, onCancel }: Props) {
   const [exercises, setExercises] = useState<ExerciseDraft[]>(() => plan.exercises.map(exercise => ({
     exercise, name: exercise.name, targets: plannedSets(exercise).map(base => ({ id: crypto.randomUUID(), base })),
   })))
@@ -61,13 +64,18 @@ export function DayWorkoutEditor({ plan, weekday, busy, error, onChange, onError
     edit(next)
   }
 
-  return <form className="day-editor" onSubmit={event => {
+  return <form className={plan.workoutDate ? 'day-editor dated-editor' : 'day-editor'} onSubmit={event => {
     event.preventDefault()
     try { onSave(exercises.map(toExercise)) }
     catch (error) { onError((error as Error).message) }
   }}>
-    <h2 ref={heading} tabIndex={-1}>Edit Day's Workout</h2>
-    <p className="editor-context">{weekday} · {plan.name}. Changes apply to future workouts on this weekly plan. Use Exercise feedback in the guided workout to record RIR, mobility, and notes.</p>
+    <h2 ref={heading} tabIndex={-1}>{importing ? 'Review imported workout' : "Edit Day's Workout"}</h2>
+    <p className="editor-context">{plan.workoutDate
+      ? <>{weekday} · {plan.workoutDate}. {importing
+        ? (replacing ? 'Confirming will replace the one-time plan for this date and day.' : 'Confirming will save a one-time plan for this date and day.')
+        : 'Changes apply to this one-time plan.'}</>
+      : <>{weekday} · {plan.name}. Changes apply to future workouts on this weekly plan. Use Exercise feedback in the guided workout to record RIR, mobility, and notes.</>}
+    </p>
     <fieldset disabled={busy}>
       {exercises.map((item, index) => {
         const { exercise, name, targets } = item
@@ -81,6 +89,7 @@ export function DayWorkoutEditor({ plan, weekday, busy, error, onChange, onError
               <button type="button" aria-label={`Remove ${rowLabel}`} onClick={() => edit(exercises.filter((_, i) => i !== index))}>Remove exercise</button>
             </div>
           </div>
+          {exercise.coachNotes && <ExerciseFeedbackSummary feedback={{ coachNotes: exercise.coachNotes }} />}
           {targets.map(({ id, base, fields }, setIndex) => {
             const label = `${rowLabel} set ${setIndex + 1}`
             const editTarget = (next: TargetDraft) => update(index, { ...item, targets: targets.map((target, i) => i === setIndex ? next : target) })
@@ -117,7 +126,7 @@ export function DayWorkoutEditor({ plan, weekday, busy, error, onChange, onError
       {error && <p role="alert">{error}</p>}
       <div className="actions editor-actions">
         <button type="button" onClick={onCancel}>Cancel</button>
-        <button type="submit" className="primary">Save workout plan</button>
+        <button type="submit" className="primary">{importing ? 'Confirm import' : 'Save workout plan'}</button>
       </div>
     </fieldset>
   </form>

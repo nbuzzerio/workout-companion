@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import { SessionStore } from './storage'
-import { demoPlan, formatSet, plannedSets, validateSession, type Exercise, type Session, type Plan } from './workouts'
+import { assertDate, demoPlan, formatSet, isStandardPerformance, plannedSets, sessionWeekday, validateSession, type PlanExercise, type Session, type Plan } from './workouts'
 import { draftKey, getGuide, guideSteps, readActual, recordSet, recoverLegacyDraft, setActual, startGuidedWorkout, type ResultCorrection, type WorkoutDraft } from './guided-workout'
 import { GuidedWorkout } from './GuidedWorkout'
 import { DayWorkoutEditor } from './DayWorkoutEditor'
+import { GoogleSheetsImport } from './GoogleSheetsImport'
+import type { SheetsExercise } from './sheets-import'
 import { RecordedResultsEditor } from './RecordedResultsEditor'
 import { PwaStatus } from './PwaStatus'
 import { SyncPanel } from './SyncPanel'
@@ -12,17 +14,16 @@ import { same } from './sync'
 import './App.css'
 
 const defaultStore = new SessionStore()
-const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+const weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+const days = weekdays.map(day => day.slice(0, 3))
 function dayFor(weekday = 1) {
   return days[(weekday + 6) % 7]
 }
 
-function exportDay(session: Session, plan?: Plan) {
-  // Legacy sessions have no scheduled-day snapshot. Use the linked plan if available.
-  return dayFor(session.planWeekday ?? plan?.weekday ?? new Date(`${session.date}T12:00:00Z`).getUTCDay())
-}
 const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` }
+type ImportDestination = { date: string; weekday: Plan['weekday']; previous?: Plan }
 type Editor = { kind: 'plan'; plan: Plan } | { kind: 'results'; session: Session }
+  | ({ kind: 'sheets' } & ImportDestination) | { kind: 'import'; plan: Plan; previous?: Plan }
 
 function readRecovery(): { draft?: WorkoutDraft; error: string } {
   try {
@@ -73,10 +74,11 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
   function restore(recovered: WorkoutDraft, rows: Session[], savedPlans: Plan[]) {
     const saved = committedDraft(recovered, rows)
     const restored = saved ?? recovered.session
+    const linked = savedPlans.find(plan => plan.id === restored.planId)
     setDraft(saved ? { session: saved } : recovered)
     setDate(restored.date)
-    setPlanId(restored.planId)
-    setDay(dayFor(savedPlans.find(plan => plan.id === restored.planId)?.weekday))
+    if (linked && !linked.workoutDate) setPlanId(linked.id)
+    setDay(dayFor(sessionWeekday(restored, linked)))
     setDirty(!saved)
     setMessage(saved ? 'Reopened saved workout.' : 'Recovered draft on this device.')
     if (saved) {
@@ -85,22 +87,26 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
     }
   }
 
+  const refreshOpenSession = useEffectEvent((rows: Session[]) => {
+    if (!dirty && !busy) setDraft(current => {
+      const saved = current && rows.find(row => row.id === current.session.id)
+      return saved ? { session: saved } : undefined
+    })
+  })
+
   useEffect(() => {
     let active = true
     const refreshSaved = () => { void store.list().then(rows => {
       if (!active) return
       setRecords(rows)
       void store.plans().then(p => { if (active) setPlans(p) }).catch(() => {})
-      if (!dirty && !busy) setDraft(current => {
-        const saved = current && rows.find(row => row.id === current.session.id)
-        return saved ? { session: saved } : undefined
-      })
+      refreshOpenSession(rows)
     }).catch(() => {}) }
     window.addEventListener('workout-storage', refreshSaved)
     const channel = typeof BroadcastChannel === 'undefined' ? undefined : new BroadcastChannel('workout-storage')
     if (channel) channel.onmessage = refreshSaved
     return () => { active = false; channel?.close(); window.removeEventListener('workout-storage', refreshSaved) }
-  }, [store, dirty, busy])
+  }, [store])
 
   useEffect(() => {
     if (!dirty && !editorDirty) return
@@ -164,7 +170,8 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
       if (draft.fields) {
         const guide = getGuide(prepared)
         const current = guideSteps(guide)[guide.cursor]
-        prepared = recordSet(prepared, readActual(setActual(current) ?? current.target, draft.fields), false)
+        const actual = setActual(current)
+        prepared = recordSet(prepared, readActual(actual ?? current.target, draft.fields, prepared.actualsStartEmpty && !actual), false)
       }
     } catch (error) { setError((error as Error).message); return }
     if (!window.confirm(complete ? 'Finish and save this workout?' : 'Save this session on this device?')) return
@@ -188,9 +195,10 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
   }
 
   function reopen(saved: Session) {
+    const linked = plans.find(plan => plan.id === saved.planId)
     setDraft({ session: saved })
-    setPlanId(saved.planId)
-    setDay(dayFor(plans.find(plan => plan.id === saved.planId)?.weekday))
+    if (linked && !linked.workoutDate) setPlanId(linked.id)
+    setDay(dayFor(sessionWeekday(saved, linked)))
     setMessage('Reopened saved session.')
     setError('')
   }
@@ -230,11 +238,39 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
     finally { saving.current = false; setBusy(false) }
   }
 
-  function savePlan(original: Plan, exercises: Exercise[]) {
+  function savePlan(original: Plan, exercises: PlanExercise[]) {
     void saveEditor(async () => {
       const saved = await store.savePlan(original, exercises)
       setPlans(plans => plans.map(plan => plan.id === saved.id ? saved : plan))
       setMessage('Workout plan saved.')
+    })
+  }
+
+  function reviewImport(destination: ImportDestination, exercises: SheetsExercise[]) {
+    const { date, weekday, previous } = destination
+    const plan: Plan = {
+      version: 1,
+      id: previous?.id ?? `sheets-${date}-${weekday}`,
+      name: `Imported workout · ${dayFor(weekday)} · ${date}`,
+      workoutDate: date,
+      weekday,
+      demo: false,
+      exercises: exercises.map(({ name, targets, coachNotes }) => ({
+        id: crypto.randomUUID(), name, sets: targets.filter(isStandardPerformance), prescription: targets,
+        ...(coachNotes && { coachNotes }),
+      })),
+    }
+    setEditor({ kind: 'import', plan, previous })
+  }
+
+  function confirmImport(plan: Plan, exercises: PlanExercise[], previous?: Plan) {
+    void saveEditor(async () => {
+      const recovery = readRecovery()
+      if (recovery.error) throw new Error(recovery.error)
+      if (recovery.draft) throw new Error('A workout draft is open. Save or discard it before importing.')
+      const saved = await store.saveImportedPlan({ ...plan, exercises }, previous)
+      setPlans(plans => [...plans.filter(plan => plan.id !== saved.id), saved])
+      setMessage(`Workout plan imported for ${dayFor(saved.weekday)} · ${saved.workoutDate}.`)
     })
   }
 
@@ -255,15 +291,26 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
     onCancel: () => { if (!editorDirty || window.confirm('Discard unsaved editor changes?')) closeEditor() },
   }
 
-  const plan = plans.find(p => p.id === planId) ?? plans[0]
+  const weeklyPlans = plans.filter(plan => !plan.workoutDate)
+  const weeklyPlan = weeklyPlans.find(plan => plan.id === planId) ?? weeklyPlans[0]
+  const datePlans = plans.filter(plan => plan.workoutDate === date)
+  const datePlan = datePlans.find(plan => dayFor(plan.weekday) === day)
+  const plan = datePlan ?? weeklyPlan
   const sessionPlan = session && plans.find(p => p.id === session.planId)
-  const availableDay = dayFor((session ? sessionPlan : plan)?.weekday)
-  const showSession = Boolean(!editor && draft && (!loading || dirty) && (day === availableDay || loading))
+  const sessionDay = session && dayFor(sessionWeekday(session, sessionPlan))
+  const showSession = Boolean(!editor && draft && (!loading || dirty) && (day === sessionDay || loading))
   const available = plan && day === dayFor(plan.weekday)
   const hasSets = plan?.exercises.some(exercise => plannedSets(exercise).length)
-  const active = plan && records.find(row => row.planId === plan.id && row.demo === plan.demo && row.date === date && row.status === 'active')
+  const activeForDay = records.find(row => row.date === date && row.status === 'active'
+    && dayFor(sessionWeekday(row, plans.find(plan => plan.id === row.planId))) === day)
+  const active = datePlan ? activeForDay : plan && records.find(row => row.planId === plan.id && row.demo === plan.demo && row.date === date && row.status === 'active')
+  const importBlocked = activeForDay ? 'Resume and finish the active workout for this date and day before importing.'
+    : draft ? 'Return to the open workout before importing.' : ''
+  const importing = editor?.kind === 'sheets' || editor?.kind === 'import'
   const previous = session && records.find(row => row.planId === session.planId && row.demo === session.demo && row.date < session.date && row.status === 'completed')
-  const week = <nav className="week" aria-label="Weekly day selector">{days.map(d => <button key={d} disabled={busy} aria-pressed={day === d} onClick={() => setDay(d)}>{d}<small>{d === availableDay ? 'Strength' : 'No plan'}</small></button>)}</nav>
+  const week = <nav className="week" aria-label="Weekly day selector">{days.map(d => <button key={d} disabled={busy} aria-pressed={day === d} onClick={() => setDay(d)}>{d}<small>{
+    datePlans.some(plan => dayFor(plan.weekday) === d) ? 'Imported' : d === (sessionDay ?? (weeklyPlan && dayFor(weeklyPlan.weekday))) ? 'Strength' : 'No plan'
+  }</small></button>)}</nav>
   const status = <p role="status" aria-live="polite">{message || 'Confirm a save to add your workout to local history.'}</p>
 
   return <main className={showSession ? 'runner runner-active' : 'runner'}>
@@ -272,16 +319,21 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
       <SyncPanel store={syncStore} />
     </header>
     <PwaStatus canReload={!dirty && !editorDirty && !busy && !loading && !recoveryError} />
-    {!showSession && (session?.demo ?? plan?.demo) && <aside className="demo"><strong>DEMO workspace</strong><span>Practice sessions use sample data. You can choose any workout date.</span></aside>}
+    {!showSession && !importing && (session?.demo ?? plan?.demo) && <aside className="demo"><strong>DEMO workspace</strong><span>Practice sessions use sample data. You can choose any workout date.</span></aside>}
     {!showSession && !editor && week}
     <div className="workspace">
-      <section aria-label={editor ? 'Workout editor' : showSession ? 'Current session' : 'Workout plan'}>
-        {editor?.kind === 'plan' ? <DayWorkoutEditor {...editorActions} plan={editor.plan} weekday={dayFor(editor.plan.weekday)}
+      <section className={!editor && !showSession && datePlan ? 'dated-plan' : undefined}
+        aria-label={editor?.kind === 'sheets' ? 'Google Sheets import' : editor ? 'Workout editor' : showSession ? 'Current session' : 'Workout plan'}>
+        {editor?.kind === 'sheets' ? <GoogleSheetsImport date={editor.date} weekday={weekdays[(editor.weekday + 6) % 7]} replacing={Boolean(editor.previous)}
+          onChange={editorActions.onChange} onCancel={editorActions.onCancel} onReview={workout => reviewImport(editor, workout)} />
+          : editor?.kind === 'import' ? <DayWorkoutEditor {...editorActions} plan={editor.plan} weekday={dayFor(editor.plan.weekday)}
+            importing replacing={Boolean(editor.previous)} onSave={exercises => confirmImport(editor.plan, exercises, editor.previous)} />
+          : editor?.kind === 'plan' ? <DayWorkoutEditor {...editorActions} plan={editor.plan} weekday={dayFor(editor.plan.weekday)}
           onSave={exercises => savePlan(editor.plan, exercises)} />
           : editor?.kind === 'results' ? <RecordedResultsEditor {...editorActions} session={editor.session}
             onSave={corrections => saveCorrections(editor.session, corrections)} />
-          : showSession && draft ? <>
-          <GuidedWorkout key={draft.session.id} draft={draft} day={exportDay(draft.session, sessionPlan)} previous={previous} busy={busy || loading} error={error}
+          : showSession && draft && sessionDay ? <>
+          <GuidedWorkout key={draft.session.id} draft={draft} day={sessionDay} previous={previous} busy={busy || loading} error={error}
             onChange={keepDraft} onError={setError} onFinish={() => void persist(true)} />
           <div className="actions session-actions">
             {draft.session.status === 'active' && <button disabled={busy || loading} onClick={() => void persist(false)}>Save session</button>}
@@ -292,15 +344,15 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
           <div className="session-status">{status}</div>
         </> : <>
           <div className="plan-heading">
-            <div><p className="eyebrow">{day.toUpperCase()} / {available ? 'WORKOUT PLAN' : 'UNSCHEDULED'}</p>
-              <h2>{available ? plan.name : 'No workout planned'}</h2></div>
+            <div><p className="eyebrow">{day.toUpperCase()} / {datePlan ? 'ONE-TIME PLAN' : available ? 'WORKOUT PLAN' : 'UNSCHEDULED'}</p>
+              <h2>{datePlan ? 'Imported workout' : available ? plan.name : 'No workout planned'}</h2></div>
             <label>Workout date<input type="date" value={date} disabled={dirty || busy} onChange={e => { setDate(e.target.value); setDraft(undefined); setMessage('') }} /></label>
           </div>
-          {plans.length > 1 && <label className="plan-picker">Saved plan<select value={plan?.id} disabled={dirty || busy} onChange={e => {
-            setPlanId(e.target.value); setDraft(undefined); setDay(dayFor(plans.find(p => p.id === e.target.value)?.weekday)); setMessage('')
-          }}>{plans.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>}
-          {!draft && available && <div className="actions plan-actions">
-            {(active || hasSets) && <button className="primary" disabled={!date || busy || loading || Boolean(recoveryError)} onClick={() => {
+          {!datePlan && weeklyPlans.length > 1 && <label className="plan-picker">Saved plan<select value={weeklyPlan?.id} disabled={dirty || busy} onChange={e => {
+            setPlanId(e.target.value); setDraft(undefined); setDay(dayFor(weeklyPlans.find(p => p.id === e.target.value)?.weekday)); setMessage('')
+          }}>{weeklyPlans.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>}
+          <div className="actions plan-actions">
+            {!draft && available && (active || hasSets) && <button className="primary" disabled={!date || busy || loading || Boolean(recoveryError)} onClick={() => {
               if (active) reopen(active)
               else {
                 try {
@@ -310,11 +362,21 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
                 } catch (error) { setError((error as Error).message) }
               }
             }}>{active ? 'Resume Workout' : 'Start Workout'}</button>}
-            <button disabled={busy || loading} onClick={() => openEditor({ kind: 'plan', plan })}>Edit Day's Workout</button>
-          </div>}
-          {available && (hasSets ? <ul className="plan-preview">{plan.exercises.filter(exercise => plannedSets(exercise).length).map((exercise, index) => <li key={index}>
-            <strong>{exercise.name}</strong><span>{plannedSets(exercise).map(formatSet).join(' · ')}</span>
-          </li>)}</ul> : <p>This plan has no sets.</p>)}
+            {!draft && available && <button disabled={busy || loading} onClick={() => openEditor({ kind: 'plan', plan })}>Edit Day's Workout</button>}
+            <button className={!available || !hasSets ? 'primary' : undefined} disabled={!date || busy || loading || Boolean(importBlocked || recoveryError)}
+              aria-describedby={importBlocked ? 'import-blocked' : undefined} onClick={() => {
+                try {
+                  assertDate(date)
+                  const weekday = ((days.indexOf(day) + 1) % 7) as Plan['weekday']
+                  openEditor({ kind: 'sheets', date, weekday, previous: datePlan })
+                } catch (error) { setError((error as Error).message) }
+              }}>Import from Google Sheets</button>
+          </div>
+          {importBlocked && <p className="editor-context" id="import-blocked">{importBlocked}</p>}
+          {available && !hasSets && <p>This plan has no sets.</p>}
+          {available && (datePlan || hasSets) && <ul className="plan-preview">{plan.exercises.filter(exercise => datePlan || plannedSets(exercise).length).map(exercise => <li key={exercise.id}>
+            <strong>{exercise.name}</strong><span>{plannedSets(exercise).map(formatSet).join(' · ') || 'No targets'}</span>
+          </li>)}</ul>}
         </>}
       </section>
       <aside className="history" aria-label="Saved sessions">
