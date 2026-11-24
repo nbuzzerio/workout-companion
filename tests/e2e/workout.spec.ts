@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { appConfig } from '../../config/app.ts'
+import { confirmAction } from '../support/confirmation.ts'
 import { createSession, demoPlan } from '../../src/workouts.ts'
 import { createServer } from 'node:http'
 import { readFile } from 'node:fs/promises'
@@ -12,7 +13,6 @@ test('production runner saves, reopens, completes and works offline at deep link
     const sessionCheck = url.pathname === '/api/v1/auth/session' && request.method() === 'GET'
     if (url.origin !== 'http://127.0.0.1:4173' || (url.pathname.startsWith('/api/') && !sessionCheck)) unexpectedRequests.push(request.url())
   })
-  page.on('dialog', dialog => void dialog.accept())
   await page.goto(appConfig.basePath)
   await expect(page.getByRole('heading', { name: 'One set at a time.' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Start Workout' })).toBeEnabled()
@@ -49,7 +49,7 @@ test('production runner saves, reopens, completes and works offline at deep link
   await page.setViewportSize({ width: 320, height: 640 })
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
   await expect(page.getByRole('button', { name: 'Next Set' })).toBeVisible()
-  await page.getByRole('button', { name: 'Save session', exact: true }).click()
+  await confirmAction(page, 'Save session')
   await expect(page.getByRole('status')).toHaveText('Saved on this device.')
   await page.goto(`${appConfig.basePath}history/nested`)
   await page.reload()
@@ -73,7 +73,7 @@ test('production runner saves, reopens, completes and works offline at deep link
   await page.getByRole('button', { name: 'Next Exercise' }).click()
   await page.getByRole('button', { name: 'Review Workout' }).click()
   await expect(page.getByRole('heading', { name: 'Review workout' })).toBeVisible()
-  await page.getByRole('button', { name: 'Finish Workout' }).click()
+  await confirmAction(page, 'Finish Workout')
   await expect(page.getByRole('status')).toHaveText('Saved and completed on this device.')
   await page.reload()
   await page.getByRole('button', { name: /DEMO .*completed/ }).click()
@@ -149,7 +149,6 @@ test('the existing recovery key survives reload without becoming saved history',
 
 test('Question 2: the day editor and guided exercise feedback are separate and persist after reload', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 320, height: 720 })
-  page.on('dialog', dialog => void dialog.accept())
   await page.goto(appConfig.basePath)
   await page.getByRole('button', { name: "Edit Day's Workout" }).click()
   const editor = page.getByRole('region', { name: 'Workout editor' })
@@ -178,7 +177,7 @@ test('Question 2: the day editor and guided exercise feedback are separate and p
   const feedbackCapture = testInfo.outputPath('02-guided-exercise-feedback.png')
   await page.getByRole('region', { name: 'Dumbbell hinge' }).screenshot({ path: feedbackCapture })
   await testInfo.attach('Guided exercise feedback', { path: feedbackCapture, contentType: 'image/png' })
-  await page.getByRole('button', { name: 'Save session', exact: true }).click()
+  await confirmAction(page, 'Save session')
   await expect(page.getByRole('status')).toHaveText('Saved on this device.')
   await page.reload()
   await page.getByRole('button', { name: 'Resume Workout' }).click()
@@ -213,7 +212,6 @@ test('a real waiting service worker respects unsaved edits and reloads only afte
     const address = server.address()
     if (!address || typeof address === 'string') throw new Error('Missing test server address')
     await page.goto(`http://127.0.0.1:${address.port}${appConfig.basePath}`)
-    page.on('dialog', dialog => void dialog.accept())
     await page.evaluate(async () => { await navigator.serviceWorker.ready })
     await page.reload()
     await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true)
@@ -228,7 +226,7 @@ test('a real waiting service worker respects unsaved edits and reloads only afte
     await expect(update).toBeDisabled()
     await expect(page.getByLabel('Leg Extension set 1 machine position')).toHaveValue('P')
     await page.getByLabel('Leg Extension set 1 machine position').fill('P12')
-    await page.getByRole('button', { name: 'Save session', exact: true }).click()
+    await confirmAction(page, 'Save session')
     await expect(page.getByRole('status')).toHaveText('Saved on this device.')
     await expect(update).toBeEnabled()
     await Promise.all([page.waitForEvent('load'), update.click()])

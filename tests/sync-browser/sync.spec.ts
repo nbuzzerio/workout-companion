@@ -4,6 +4,7 @@ import { mkdir, mkdtemp } from 'node:fs/promises'
 import { resolve, join } from 'node:path'
 import { demoPlan } from '../../src/workouts.ts'
 import { fixture, password, type Fixture } from '../support/local-service.mjs'
+import { confirmAction } from '../support/confirmation.ts'
 let service: Fixture
 test.beforeEach(async () => { service = await fixture('http://127.0.0.1:5174', Number(process.env.WORKOUT_SYNC_TEST_PORT ?? 4317)) })
 test.afterEach(async () => { await service?.close() })
@@ -37,21 +38,20 @@ test('two browsers: consent, online login, offline saves, refresh, conflict and 
   const ca = await browser.newContext(), cb = await browser.newContext(); const a = await ca.newPage(), b = await cb.newPage()
   const origin = 'http://127.0.0.1:5174'; let beforeConsent = 0
   a.on('request', r => { const url = new URL(r.url()); expect(url.origin).toBe(origin); if (url.pathname.endsWith('/exchange')) beforeConsent++ })
-  a.on('dialog', d => void d.accept()); b.on('dialog', d => void d.accept())
-  await a.goto('/apps/workout/'); await a.getByRole('button', { name: 'Start Workout' }).click(); await a.getByRole('button', { name: 'Save session', exact: true }).click(); await expect(a.getByRole('status')).toHaveText('Saved on this device.')
+  await a.goto('/apps/workout/'); await a.getByRole('button', { name: 'Start Workout' }).click(); await confirmAction(a, 'Save session'); await expect(a.getByRole('status')).toHaveText('Saved on this device.')
   expect(beforeConsent).toBe(0)
   const name = `Synthetic ${Date.now()}`; await connect(a, name, true); await expect.poll(() => pending(a)).toBe(0)
   await b.goto('/apps/workout/'); await connect(b, name)
   // The independently created demo plan is reviewed rather than silently overwritten.
-  await b.getByRole('button', { name: 'Keep server version' }).click(); await retry(b)
+  await confirmAction(b, 'Keep server version'); await retry(b)
   await expect.poll(() => pending(b)).toBe(0)
   await b.getByRole('button', { name: /DEMO .*active/ }).click()
   await a.evaluate(async () => { await navigator.serviceWorker.ready })
   await a.reload(); await a.getByRole('button', { name: /DEMO .*active/ }).click()
   await expect.poll(() => a.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true)
   await ca.setOffline(true); await cb.setOffline(true)
-  await a.getByLabel('DB Deadlift set 1 pounds').fill('111'); await a.getByRole('button', { name: 'Save session', exact: true }).click()
-  await b.getByLabel('DB Deadlift set 1 pounds').fill('222'); await b.getByRole('button', { name: 'Save session', exact: true }).click()
+  await a.getByLabel('DB Deadlift set 1 pounds').fill('111'); await confirmAction(a, 'Save session')
+  await b.getByLabel('DB Deadlift set 1 pounds').fill('222'); await confirmAction(b, 'Save session')
   await expect.poll(() => pending(a)).toBeGreaterThan(0); await expect.poll(() => pending(b)).toBeGreaterThan(0)
   await a.reload(); await expect.poll(() => pending(a)).toBeGreaterThan(0)
   await expect(a.locator('.sync-state')).toHaveText('Offline')
@@ -64,7 +64,7 @@ test('two browsers: consent, online login, offline saves, refresh, conflict and 
   await b.getByRole('link', { name: 'Review conflicts' }).click()
   await expect(b.locator('.sync-comparison')).toContainText('222 lb');
   await expect(b.locator('.sync-comparison')).toContainText('111 lb');
-  await expect(b.getByText(/VERSION_CONFLICT/)).toBeHidden(); await b.getByRole('button', { name: 'Keep local version' }).click(); await retry(b); await retry(a)
+  await expect(b.getByText(/VERSION_CONFLICT/)).toBeHidden(); await confirmAction(b, 'Keep local version'); await retry(b); await retry(a)
   await a.getByRole('button', { name: /DEMO .*active/ }).click(); await expect(a.getByLabel('DB Deadlift set 1 pounds')).toHaveValue('222')
   await b.getByLabel('Person name', { exact: true }).fill('Synthetic athlete'); await b.getByRole('button', { name: 'Create Person (online)' }).click()
   await b.getByLabel('Saved record', { exact: true }).selectOption({ label: 'Plan · DEMO Monday' }); await b.getByLabel('Add Person as subject').selectOption({ label: 'Synthetic athlete' }); await retry(b); await retry(a)
@@ -81,7 +81,6 @@ test('one mobile header button uploads and downloads, then foreground and period
   // Hold the automatic timers so only the chosen trigger can deliver each edit.
   await page.clock.install({ time: new Date('2026-10-01T12:00:00Z') })
   await page.clock.pauseAt(new Date('2026-10-01T12:01:00Z'))
-  page.on('dialog', dialog => void dialog.accept())
   await page.goto('/apps/workout/')
   await connect(page, 'Header ' + Date.now(), true)
   await expect(page.locator('.sync-state')).toHaveText('Synced')
@@ -108,7 +107,7 @@ test('one mobile header button uploads and downloads, then foreground and period
   await page.screenshot({ path: info.outputPath('mobile-header.png') })
   await remotePlan('Manual download')
   await page.getByRole('button', { name: 'Start Workout' }).click()
-  await page.getByRole('button', { name: 'Save session', exact: true }).click()
+  await confirmAction(page, 'Save session')
   await expect(page.locator('.sync-state')).toHaveText('Changes pending')
   const write = page.waitForRequest(r => r.url().endsWith('/exchange') && r.postDataJSON().changes.some((c: { kind: string }) => c.kind === 'session'))
   await button.click()
@@ -136,7 +135,7 @@ test('one mobile header button uploads and downloads, then foreground and period
       }))
     }))
     await page.getByLabel('DB Deadlift set 1 pounds').fill('98')
-    await page.getByRole('button', { name: 'Save session', exact: true }).click()
+    await confirmAction(page, 'Save session')
     await expect(page.locator('.sync-state')).toHaveText('Changes pending')
     const before = (await localState(page)).syncOutbox
     await syncButton(page).click()
@@ -152,15 +151,15 @@ test('one mobile header button uploads and downloads, then foreground and period
 })
 
 test('multiple tabs serialize exchanges and retain saves when coordinator closes', async ({ browser }) => {
-  const context = await browser.newContext(); const a = await context.newPage(); a.on('dialog', d => void d.accept())
+  const context = await browser.newContext(); const a = await context.newPage()
   await a.goto('/apps/workout/'); await connect(a, `Tabs ${Date.now()}`, true); await expect.poll(() => pending(a)).toBe(0)
-  const b = await context.newPage(); b.on('dialog', d => void d.accept()); await b.goto('/apps/workout/'); await panel(b)
+  const b = await context.newPage(); await b.goto('/apps/workout/'); await panel(b)
   let inFlight = 0, maximum = 0
   const tracked = new Set<object>()
   context.on('request', r => { if (new URL(r.url()).pathname.endsWith('/exchange')) { tracked.add(r); inFlight++; maximum = Math.max(maximum, inFlight) } })
   context.on('requestfinished', r => { if (tracked.delete(r)) inFlight-- }); context.on('requestfailed', r => { if (tracked.delete(r)) inFlight-- })
   await Promise.all([retry(a), retry(b)])
-  await b.getByRole('button', { name: 'Start Workout' }).click(); await b.getByRole('button', { name: 'Save session', exact: true }).click(); await a.close(); await retry(b)
+  await b.getByRole('button', { name: 'Start Workout' }).click(); await confirmAction(b, 'Save session'); await a.close(); await retry(b)
   await expect.poll(() => pending(b)).toBe(0); expect(maximum).toBeLessThanOrEqual(1)
   await context.close()
 })
@@ -168,7 +167,7 @@ test('multiple tabs serialize exchanges and retain saves when coordinator closes
 test('idle tabs do not trigger sync traffic in each other, but a confirmed save wakes sync', async ({ browser }, info) => {
   const context = await browser.newContext()
   try {
-    const a = await context.newPage(); a.on('dialog', d => void d.accept())
+    const a = await context.newPage()
     await a.goto('/apps/workout/'); await connect(a, `Idle ${Date.now()}`, true)
     await expect.poll(() => pending(a)).toBe(0)
     const b = await context.newPage(); await b.goto('/apps/workout/')
@@ -181,7 +180,7 @@ test('idle tabs do not trigger sync traffic in each other, but a confirmed save 
     await info.attach('idle-http-requests', { body: JSON.stringify(traffic, null, 2), contentType: 'application/json' })
     expect(traffic).toEqual([])
     await a.getByRole('button', { name: 'Start Workout' }).click()
-    await a.getByRole('button', { name: 'Save session', exact: true }).click()
+    await confirmAction(a, 'Save session')
     await expect.poll(() => pending(a), { timeout: 5000 }).toBe(0)
     expect(traffic.some(r => r.path.endsWith('/exchange'))).toBe(true)
     await expect(b.getByRole('button', { name: /DEMO .*active/ })).toBeVisible()
@@ -195,9 +194,9 @@ test('idle tabs do not trigger sync traffic in each other, but a confirmed save 
 test('login and restored authentication without consent never exchange workouts', async ({ browser }) => {
   const context = await browser.newContext()
   try {
-    const page = await context.newPage(); page.on('dialog', d => void d.accept())
+    const page = await context.newPage()
     const exchanges: string[] = []; context.on('request', r => { if (/\/(exchange|common\/changes)$/.test(new URL(r.url()).pathname)) exchanges.push(r.url()) })
-    await page.goto('/apps/workout/'); await page.getByRole('button', { name: 'Start Workout' }).click(); await page.getByRole('button', { name: 'Save session', exact: true }).click()
+    await page.goto('/apps/workout/'); await page.getByRole('button', { name: 'Start Workout' }).click(); await confirmAction(page, 'Save session')
     await expect.poll(() => pending(page)).toBe(2)
     const before = (await localState(page)).syncOutbox
     await panel(page)
@@ -245,7 +244,7 @@ test('pause in another tab retains a server-accepted in-flight write, survives r
   const context = await browser.newContext({ serviceWorkers: 'block' })
   let release!: () => void; const held = new Promise<void>(resolve => { release = resolve })
   try {
-    const a = await context.newPage(); a.on('dialog', d => void d.accept())
+    const a = await context.newPage()
     await a.goto('/apps/workout/'); await connect(a, `Pause ${Date.now()}`, true); await expect.poll(() => pending(a)).toBe(0)
     const b = await context.newPage(); await b.goto('/apps/workout/'); await panel(b)
     await b.waitForTimeout(2000)
@@ -257,7 +256,7 @@ test('pause in another tab retains a server-accepted in-flight write, survives r
         await held; await route.fulfill({ response }).catch(() => {})
       } else await route.continue()
     })
-    await a.getByRole('button', { name: 'Start Workout' }).click(); await a.getByRole('button', { name: 'Save session', exact: true }).click()
+    await a.getByRole('button', { name: 'Start Workout' }).click(); await confirmAction(a, 'Save session')
     await syncButton(a).click()
     await expect.poll(() => accepted).toBe(true)
     await expect(a.locator('.sync-state')).toHaveText('Syncing')
@@ -281,13 +280,13 @@ test('a full browser-process restart preserves offline pending data through auth
   const options = { headless: true, baseURL: 'http://127.0.0.1:5174/apps/workout/' }
   let context = await chromium.launchPersistentContext(profile, options)
   try {
-    let page = context.pages()[0]; page.on('dialog', d => void d.accept())
+    let page = context.pages()[0]
     await page.goto('/apps/workout/'); await connect(page, `Restart ${Date.now()}`, true); await expect.poll(() => pending(page)).toBe(0)
     await page.evaluate(async () => { await navigator.serviceWorker.ready }); await page.reload()
     const auth = await (await context.request.get('/api/v1/auth/session')).json()
     expect((await context.request.post('/api/v1/auth/logout', { data: {}, headers: { Origin: 'http://127.0.0.1:5174', 'X-CSRF-Token': auth.csrfToken } })).status()).toBe(204)
     await context.setOffline(true)
-    await page.getByRole('button', { name: 'Start Workout' }).click(); await page.getByRole('button', { name: 'Save session', exact: true }).click()
+    await page.getByRole('button', { name: 'Start Workout' }).click(); await confirmAction(page, 'Save session')
     await expect.poll(() => pending(page)).toBe(1); const before = (await localState(page)).syncOutbox
     await context.close()
     context = await chromium.launchPersistentContext(profile, options); await context.setOffline(true)
@@ -307,13 +306,13 @@ test('supervised export recovery preserves records and labels, refuses an existi
   // Use an actual downloaded export, including completed history and People.
   const source = await browser.newContext(); const recovered = await browser.newContext(); let service: Awaited<ReturnType<typeof startRecoveryServer>> | undefined
   try {
-    const page = await source.newPage(); page.on('dialog', d => void d.accept())
+    const page = await source.newPage()
     await page.goto('/apps/workout/'); await page.getByRole('button', { name: 'Start Workout' }).click()
     for (let i = 0; i < 3; i++) {
       await page.getByRole('button', { name: 'Skip Exercise', exact: true }).click()
       await page.getByRole('button', { name: 'Confirm Skip Exercise' }).click()
     }
-    await page.getByRole('button', { name: 'Finish Workout' }).click()
+    await confirmAction(page, 'Finish Workout')
     await connect(page, `Recovery ${Date.now()}`, true); await expect.poll(() => pending(page)).toBe(0)
     await page.getByLabel('Person name', { exact: true }).fill('Recovery label'); await page.getByRole('button', { name: 'Create Person (online)' }).click()
     await page.getByLabel('Saved record', { exact: true }).selectOption({ index: 2 }); await page.getByLabel('Add Person as subject').selectOption({ label: 'Recovery label' })
@@ -323,7 +322,7 @@ test('supervised export recovery preserves records and labels, refuses an existi
     expect(data.people).toEqual(expect.arrayContaining([expect.objectContaining({ displayName: 'Recovery label' })]))
     const original = await localState(page)
     service = await startRecoveryServer(data)
-    const copy = await recovered.newPage(); copy.on('dialog', d => void d.accept())
+    const copy = await recovered.newPage()
     const api: string[] = []; recovered.on('request', r => { if (new URL(r.url()).pathname.startsWith('/api/')) api.push(r.url()) })
     await copy.goto(service.url); await expect(copy.getByRole('link', { name: 'Inspect recovered workouts', includeHidden: true })).toBeHidden()
     await copy.getByRole('button', { name: 'Recover into new local database' }).click()

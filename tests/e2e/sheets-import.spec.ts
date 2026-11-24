@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { appConfig } from '../../config/app.ts'
+import { confirmAction } from '../support/confirmation.ts'
 
 test('round-trips a completed workout on a narrow mobile screen', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
@@ -11,7 +12,7 @@ test('round-trips a completed workout on a narrow mobile screen', async ({ page,
   await page.getByRole('button', { name: 'Fri No plan' }).click()
   await page.getByRole('button', { name: 'Import from Google Sheets' }).click()
   const form = page.getByRole('region', { name: 'Google Sheets import' }).locator('form')
-  await expect(form).toHaveCSS('color-scheme', 'dark')
+  await expect(form).toHaveCSS('background-color', 'rgb(29, 43, 36)')
   const paste = page.getByLabel('Paste Google Sheets cells')
   const row = ['CURRENT WEEK', '2026-11-18', 'Wed', 'Side plank', '35 sec per side', '45 sec', '4+', 'Tight', 'Sore', ''].join('\t')
   await paste.fill(row)
@@ -46,8 +47,7 @@ test('round-trips a completed workout on a narrow mobile screen', async ({ page,
   const loggedSet = page.getByRole('region', { name: 'Review workout' }).getByRole('listitem')
   await expect(loggedSet).toContainText('38 sec per side')
   await expect(loggedSet).toContainText('Planned 40 sec per side')
-  page.once('dialog', dialog => void dialog.accept())
-  await page.getByRole('button', { name: 'Finish Workout' }).click()
+  await confirmAction(page, 'Finish Workout')
   await expect(page.getByRole('status')).toHaveText('Saved and completed on this device.')
   await page.reload()
   await page.getByLabel('Workout date').fill('2026-11-23')
@@ -93,8 +93,7 @@ test('round-trips a completed workout on a narrow mobile screen', async ({ page,
   await expect(page.getByRole('radio', { checked: true })).toHaveCount(0)
   await page.getByLabel('Side plank set 1 seconds per side').fill('41')
   await page.getByRole('button', { name: 'Review Workout' }).click()
-  page.once('dialog', dialog => void dialog.accept())
-  await page.getByRole('button', { name: 'Finish Workout' }).click()
+  await confirmAction(page, 'Finish Workout')
   await expect(completed).toHaveCount(2)
   await exportWorkout.click()
   await expect(exportPreview.getByRole('row').nth(1).getByRole('cell')).toHaveText([

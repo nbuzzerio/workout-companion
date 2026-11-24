@@ -89,7 +89,6 @@ test('bulk edits a weekly day and reloads typed and freeform targets without cre
 
 test('the editor protects an unsaved guided draft and changing the plan leaves a saved active session intact', async () => {
   const store = workoutStore()
-  vi.spyOn(window, 'confirm').mockReturnValue(true)
   render(<App store={store} />)
   await ready('Start Workout')
   click('Start Workout')
@@ -103,6 +102,7 @@ test('the editor protects an unsaved guided draft and changing the plan leaves a
   click(/Mon\s*Strength/)
   expect(screen.queryByRole('button', { name: 'Correct recorded results' })).toBeNull()
   click('Save session')
+  click('OK')
   await screen.findByText('Saved on this device.')
   const [active] = await store.list()
   expect(active.guidance?.cursor).toBe(1)
@@ -129,7 +129,6 @@ test('the editor protects an unsaved guided draft and changing the plan leaves a
 
 test('exercise feedback survives draft reload and explicit corrections keep targets, skips and the plan', async () => {
   const store = workoutStore()
-  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
   const first = render(<App store={store} />)
   await ready('Start Workout')
   const date = valueOf('Workout date')
@@ -167,6 +166,7 @@ test('exercise feedback survives draft reload and explicit corrections keep targ
     click('Confirm Skip Exercise')
   }
   click('Finish Workout')
+  click('OK')
   await screen.findByText('Saved and completed on this device.')
   const [before] = await store.list()
   expect(before.exercises[0].feedback).toEqual({ rir: '4+', mobility: 'Tight', painNotes: 'Left side tired\nNo pain', coachNotes: 'Slow the lowering' })
@@ -177,11 +177,11 @@ test('exercise feedback survives draft reload and explicit corrections keep targ
   expect(deadlift.getByText('Planned 46 lb \u00d7 10')).toBeDefined()
   change('DB Deadlift recorded set 1 reps', '8')
   fireEvent.change(deadlift.getByLabelText('Coach Notes'), { target: { value: 'Corrected cue' } })
-  confirm.mockReturnValue(false)
   click('Save corrections')
+  fireEvent.click(within(screen.getByRole('dialog', { name: 'Save corrections to this completed workout?' })).getByRole('button', { name: 'Cancel' }))
   expect(await store.list()).toEqual([before])
-  confirm.mockReturnValue(true)
   click('Save corrections')
+  click('OK')
   await screen.findByText('Recorded results corrected.')
   const [after] = await store.list()
   expect(after).toMatchObject({ id: before.id, date, demo: true, status: 'completed', revision: before.revision + 1 })

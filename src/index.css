@@ -1,3 +1,57 @@
-:root { font-family: 'Segoe UI', system-ui, sans-serif; line-height: 1.5; color: #203d30; background: #f5f5ef; font-synthesis: none; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+:root {
+  color-scheme: light dark;
+  --page: light-dark(#f5f5ef, #121a16);
+  --surface: light-dark(#fff, #1d2b24);
+  --inset: light-dark(#f1f4f0, #283d31);
+  --panel: light-dark(#f4f7f1, #25352c);
+  --text: light-dark(#203d30, #e7efe9);
+  --muted: light-dark(#52625a, #b4c6ba);
+  --secondary-text: light-dark(#43584a, #cad9cf);
+  --control-bg: light-dark(#fff, #22392d);
+  --control-border: light-dark(#6d8174, #7a9384);
+  --hover: light-dark(#e6eee7, #385b49);
+  --accent: light-dark(#254d3b, #b2dec1);
+  --on-accent: light-dark(#fff, #173327);
+  --accent-hover: light-dark(#183b2c, #caecd5);
+  --focus: light-dark(#286db0, #9bcaf5);
+  --border: light-dark(#d4ded7, #4b6254);
+  --divider: light-dark(#ced9d0, #4b6254);
+  --panel-border: light-dark(#c5d2c8, #4b6254);
+  --subtle-divider: light-dark(#e5ebe6, #3f5749);
+  --card-shadow: light-dark(#21382b09, #0004);
+  --exercise-shadow: light-dark(#21382b05, #0003);
+  --dialog-backdrop: light-dark(#14261b66, #0009);
+  --demo-bg: light-dark(#eef0dc, #2e3726);
+  --demo-border: light-dark(#c5cbb3, #657353);
+  --status-text: light-dark(#34463c, #d9e6dd);
+  --status-idle: light-dark(#7c897f, #a1b4a7);
+  --success: light-dark(#36744e, #94d5a8);
+  --status-warning: light-dark(#956016, #f1c575);
+  --progress-track: light-dark(#e4ebe4, #35483c);
+  --warning-text: light-dark(#70501a, #f1c575);
+  --caution-bg: light-dark(#fff1bf, #423618);
+  --caution-text: light-dark(#63470d, #ffe6a0);
+  --error-bg: light-dark(#fff0eb, #442a28);
+  --error-text: light-dark(#862d25, #ffd4cc);
+  --feedback-green-bg: light-dark(#e5f3e7, #243e2e);
+  --feedback-green-text: light-dark(#186435, #b0e4bf);
+  --feedback-yellow-text: light-dark(#775000, #ffe6a0);
+  --feedback-red-bg: light-dark(#fce9e8, #482b2b);
+  --feedback-red-text: light-dark(#992d30, #ffbebf);
+
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--page);
+  accent-color: var(--accent);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+:root[data-appearance="light"] { color-scheme: light; }
+:root[data-appearance="dark"] { color-scheme: dark; }
+
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 280px; }

@@ -2,6 +2,18 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <meta name="color-scheme" content="light dark" />
+    <script>
+      try {
+        const preference = localStorage.getItem('workout-companion-appearance')
+        if (preference === 'light' || preference === 'dark') {
+          document.documentElement.dataset.appearance = preference
+          document.querySelector('meta[name="color-scheme"]').content = preference
+        }
+      } catch {
+        // The default follows the device when browser storage is unavailable.
+      }
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Workout Companion — Your personal workout tracker." />
     <title>Workout Companion</title>

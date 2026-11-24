@@ -27,7 +27,6 @@ test('the runner prevents an update while dirty, including partial machine input
   vi.spyOn(store, 'ensurePlan').mockResolvedValue(undefined)
   vi.spyOn(store, 'list').mockResolvedValue([])
   vi.spyOn(store, 'plans').mockResolvedValue([demoPlan])
-  vi.spyOn(window, 'confirm').mockReturnValue(true)
   render(<App store={store} />)
   const update = screen.getByRole('button', { name: 'Reload to update' }) as HTMLButtonElement
   await waitFor(() => expect(update.disabled).toBe(false))
@@ -39,6 +38,7 @@ test('the runner prevents an update while dirty, including partial machine input
   fireEvent.click(update)
   expect(worker.update).not.toHaveBeenCalled()
   fireEvent.click(screen.getByRole('button', { name: 'Discard unsaved changes' }))
+  fireEvent.click(screen.getByRole('button', { name: 'OK' }))
   expect(update.disabled).toBe(false)
 })
 

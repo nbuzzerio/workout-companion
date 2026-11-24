@@ -70,7 +70,6 @@ test.each([
 
 test('a single set guides navigation, reload, skips and a read-only summary without double logging', async () => {
   const store = memoryStore()
-  vi.spyOn(window, 'confirm').mockReturnValue(true)
   const first = render(<App store={store} />)
   await start()
   expect(screen.getByText('Exercise 1 of 3')).toBeDefined()
@@ -115,6 +114,7 @@ test('a single set guides navigation, reload, skips and a read-only summary with
   expect(screen.getAllByText('Training time')).toHaveLength(2)
   expect(screen.getByText('51.5 lb × 8')).toBeDefined()
   click('Finish Workout')
+  click('OK')
   await screen.findByText('Saved and completed on this device.')
   expect(screen.getByRole('heading', { name: 'Workout finished' })).toBeDefined()
   expect(screen.queryByRole('textbox', { name: 'Leg Extension set 1 machine position' })).toBeNull()
@@ -161,18 +161,19 @@ test('the guided fields support bodyweight and time per side, bands, and multili
 test('save requires confirmation, reports a denied write, and can reopen the same cursor', async () => {
   const store = memoryStore()
   vi.spyOn(store, 'save').mockRejectedValueOnce(new Error('denied'))
-  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
   const first = render(<App store={store} />)
   await start()
   click('Next Set')
   change('DB Deadlift set 2 pounds', '57')
   click('Save session')
+  fireEvent.click(within(screen.getByRole('dialog', { name: 'Save this session on this device?' })).getByRole('button', { name: 'Cancel' }))
   expect(store.save).not.toHaveBeenCalled()
-  confirm.mockReturnValue(true)
   click('Save session')
+  click('OK')
   await screen.findByText('Save failed: denied')
   expect(valueOf('DB Deadlift set 2 pounds')).toBe('57')
   click('Save session')
+  click('OK')
   await screen.findByText('Saved on this device.')
   first.unmount()
   render(<App store={store} />)
@@ -221,7 +222,6 @@ test('the original recovery format and saved actuals reopen with demo history is
 
 test('a save committed before draft cleanup reopens the same completed workout', async () => {
   const store = memoryStore()
-  vi.spyOn(window, 'confirm').mockReturnValue(true)
   const first = render(<App store={store} />)
   await start()
   for (let i = 0; i < 3; i++) {
@@ -230,6 +230,7 @@ test('a save committed before draft cleanup reopens the same completed workout',
   }
   const remove = vi.spyOn(Storage.prototype, 'removeItem').mockImplementationOnce(() => { throw new Error('denied') })
   click('Finish Workout')
+  click('OK')
   await screen.findByText('Saved and completed on this device.')
   expect(localStorage.getItem(draftKey)).toBeTruthy()
   remove.mockRestore()
@@ -242,13 +243,13 @@ test('a save committed before draft cleanup reopens the same completed workout',
 })
 
 test('discard cancellation keeps edits open when draft storage is denied', async () => {
-  vi.spyOn(window, 'confirm').mockReturnValue(false)
   vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('denied') })
   render(<App store={memoryStore()} />)
   await start()
   expect(screen.getByRole('alert').textContent).toContain('Draft storage failed')
   expect(screen.getByRole('status').textContent).toBe('Unsaved changes')
   click('Discard unsaved changes')
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }))
   expect(valueOf('DB Deadlift set 1 pounds')).toBe('46')
 })
 

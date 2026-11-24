@@ -167,12 +167,12 @@ test.each([false, true])('Actual values start a fresh draft with carry notes=%s 
 
 test('cancels reviewed imports, protects recovered drafts, and rechecks active sessions at confirmation', async () => {
   const store = workoutStore()
-  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
   const first = render(<App store={store} />)
   await selectDateAndDay(/Mon\s*Strength/)
   reviewSheet(true)
   click('Cancel')
-  expect(confirm).toHaveBeenCalled()
+  expect(screen.getByRole('dialog', { name: 'Discard unsaved editor changes?' })).toBeDefined()
+  click('OK')
   expect(await store.plans()).toEqual([demoPlan])
 
   click('Start Workout')
@@ -187,12 +187,14 @@ test('cancels reviewed imports, protects recovered drafts, and rechecks active s
   click(/Mon\s*Strength/)
   expect(valueOf('DB Deadlift set 1 pounds')).toBe('52')
   click('Discard unsaved changes')
+  click('OK')
 
   reviewSheet()
   const active = await act(() => store.save(startGuidedWorkout(demoPlan, date)))
   click('Confirm import')
   await screen.findByText(/An active workout exists for this date and day/)
   click('Cancel')
+  click('OK')
   expect(button(importAction).disabled).toBe(true)
   expect(await store.list()).toEqual([active])
   expect(await store.plans()).toEqual([demoPlan])

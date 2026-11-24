@@ -9,6 +9,8 @@ import type { SheetsExercise } from './sheets-import'
 import { RecordedResultsEditor } from './RecordedResultsEditor'
 import { PwaStatus } from './PwaStatus'
 import { SyncPanel } from './SyncPanel'
+import { AppearanceSetting } from './AppearanceSetting'
+import { ConfirmationDialog, type RequestConfirmation } from './ConfirmationDialog'
 import { SyncStore } from './sync-store'
 import { same } from './sync'
 import './App.css'
@@ -68,8 +70,11 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
   const [dirty, setDirty] = useState(Boolean(initialRecovery.draft))
   const [editor, setEditor] = useState<Editor>()
   const [editorDirty, setEditorDirty] = useState(false)
+  const [confirmation, setConfirmation] = useState<{ message: string; onConfirm: () => void }>()
   const saving = useRef(false)
   const session = draft?.session
+
+  const requestConfirmation: RequestConfirmation = (message, onConfirm) => setConfirmation({ message, onConfirm })
 
   function restore(recovered: WorkoutDraft, rows: Session[], savedPlans: Plan[]) {
     const saved = committedDraft(recovered, rows)
@@ -163,7 +168,7 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
     } finally { setBusy(false) }
   }
 
-  async function persist(complete: boolean) {
+  function persist(complete: boolean) {
     if (!draft || saving.current) return
     let prepared = draft.session
     try {
@@ -174,8 +179,14 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
         prepared = recordSet(prepared, readActual(actual ?? current.target, draft.fields, prepared.actualsStartEmpty && !actual), false)
       }
     } catch (error) { setError((error as Error).message); return }
-    if (!window.confirm(complete ? 'Finish and save this workout?' : 'Save this session on this device?')) return
-    if (prepared !== draft.session) keepDraft({ session: prepared })
+    requestConfirmation(complete ? 'Finish and save this workout?' : 'Save this session on this device?', () => {
+      if (saving.current) return
+      if (prepared !== draft.session) keepDraft({ session: prepared })
+      void saveSession(prepared, complete)
+    })
+  }
+
+  async function saveSession(prepared: Session, complete: boolean) {
     saving.current = true
     setBusy(true)
     setError('')
@@ -204,7 +215,6 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
   }
 
   function discard() {
-    if (!window.confirm('Discard unsaved changes? Saved history will be retained.')) return
     try {
       localStorage.removeItem(draftKey)
       setDraft(undefined)
@@ -276,19 +286,20 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
 
   function saveCorrections(original: Session, corrections: ResultCorrection[]) {
     if (!corrections.length) { closeEditor(); return }
-    if (!window.confirm('Save corrections to this completed workout?')) return
-    void saveEditor(async () => {
-      const saved = await store.correctResults(original, corrections)
-      setDraft({ session: saved })
-      setRecords(rows => rows.map(row => row.id === saved.id ? saved : row))
-      setMessage('Recorded results corrected.')
+    requestConfirmation('Save corrections to this completed workout?', () => {
+      void saveEditor(async () => {
+        const saved = await store.correctResults(original, corrections)
+        setDraft({ session: saved })
+        setRecords(rows => rows.map(row => row.id === saved.id ? saved : row))
+        setMessage('Recorded results corrected.')
+      })
     })
   }
 
   const editorActions = {
     busy, error, onError: setError,
     onChange: () => { setEditorDirty(true); setError('') },
-    onCancel: () => { if (!editorDirty || window.confirm('Discard unsaved editor changes?')) closeEditor() },
+    onCancel: () => { if (editorDirty) requestConfirmation('Discard unsaved editor changes?', closeEditor); else closeEditor() },
   }
 
   const weeklyPlans = plans.filter(plan => !plan.workoutDate)
@@ -316,8 +327,10 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
   return <main className={showSession ? 'runner runner-active' : 'runner'}>
     <header className="app-header">
       <div><p className="eyebrow">WORKOUT COMPANION / LOCAL TRAINING LOG</p><h1>One set at a time.</h1>{!showSession && <p>Your plan, your last lift, your next set.</p>}</div>
-      <SyncPanel store={syncStore} />
+      <AppearanceSetting />
+      <SyncPanel store={syncStore} requestConfirmation={requestConfirmation} />
     </header>
+    {confirmation && <ConfirmationDialog {...confirmation} onDismiss={() => setConfirmation(undefined)} />}
     <PwaStatus canReload={!dirty && !editorDirty && !busy && !loading && !recoveryError} />
     {!showSession && !importing && (session?.demo ?? plan?.demo) && <aside className="demo"><strong>DEMO workspace</strong><span>Practice sessions use sample data. You can choose any workout date.</span></aside>}
     {!showSession && !editor && week}
@@ -334,11 +347,11 @@ function App({ store = defaultStore }: { store?: SessionStore }) {
             onSave={corrections => saveCorrections(editor.session, corrections)} />
           : showSession && draft && sessionDay ? <>
           <GuidedWorkout key={draft.session.id} draft={draft} day={sessionDay} previous={previous} busy={busy || loading} error={error}
-            onChange={keepDraft} onError={setError} onFinish={() => void persist(true)} />
+            onChange={keepDraft} onError={setError} onFinish={() => persist(true)} />
           <div className="actions session-actions">
-            {draft.session.status === 'active' && <button disabled={busy || loading} onClick={() => void persist(false)}>Save session</button>}
+            {draft.session.status === 'active' && <button disabled={busy || loading} onClick={() => persist(false)}>Save session</button>}
             {draft.session.status === 'completed' && <button disabled={busy || dirty || loading} onClick={() => openEditor({ kind: 'results', session: draft.session })}>Correct recorded results</button>}
-            {dirty ? <button disabled={busy || loading} onClick={discard}>Discard unsaved changes</button>
+            {dirty ? <button disabled={busy || loading} onClick={() => requestConfirmation('Discard unsaved changes? Saved history will be retained.', discard)}>Discard unsaved changes</button>
               : <button disabled={busy} onClick={() => { setDraft(undefined); setMessage(''); setError('') }}>Back to plan</button>}
           </div>
           <div className="session-status">{status}</div>

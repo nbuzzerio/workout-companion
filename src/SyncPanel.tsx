@@ -5,6 +5,7 @@ import { SyncStore, type Backup, type Conflict } from './sync-store'
 import { planSchema, same, sessionSchema, type Association, type Kind, type Person, type Value } from './sync'
 import { formatSet, plannedSets } from './workouts'
 import { setActual } from './guided-workout'
+import type { RequestConfirmation } from './ConfirmationDialog'
 
 function download(value: unknown, name: string) {
   const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' }))
@@ -47,7 +48,7 @@ async function directory(engine: SyncEngine) {
   await engine.store.cacheDirectory(people, spaces)
 }
 
-export function SyncPanel({ store }: { store: SyncStore }) {
+export function SyncPanel({ store, requestConfirmation }: { store: SyncStore; requestConfirmation: RequestConfirmation }) {
   const engine = useMemo(() => new SyncEngine(store), [store])
   const [summary, setSummary] = useState<Awaited<ReturnType<SyncStore['summary']>> & { details?: Awaited<ReturnType<SyncStore['view']>> }>()
   const view = summary?.details
@@ -259,15 +260,15 @@ export function SyncPanel({ store }: { store: SyncStore }) {
           </details>
           <p>The selected copy replaces the other one, including a deletion. Both versions are preserved for download.</p>
           <div className="actions">
-            <button onClick={() => { if (window.confirm('Replace this local record with the displayed server version? A preserved copy remains exportable.')) void action(() => store.resolve(c.id, c.generation, 'server')) }}>Keep server version</button>
-            <button onClick={() => { if (window.confirm('Replace the server record with this local version, including restoring it if deleted? A preserved copy remains exportable.')) void action(() => store.resolve(c.id, c.generation, 'local')) }}>Keep local version</button>
+            <button onClick={() => requestConfirmation('Replace this local record with the displayed server version? A preserved copy remains exportable.', () => void action(() => store.resolve(c.id, c.generation, 'server')))}>Keep server version</button>
+            <button onClick={() => requestConfirmation('Replace the server record with this local version, including restoring it if deleted? A preserved copy remains exportable.', () => void action(() => store.resolve(c.id, c.generation, 'local')))}>Keep local version</button>
           </div>
         </section>)}</div>
         <section><h3>People and record labels</h3><p>A Person is a label, not a login. Creating People requires an online signed-in connection. Existing associations, including multiple roles, are retained.</p>
           {signedIn && <form onSubmit={e => { e.preventDefault(); const form = e.currentTarget; const name = String(new FormData(form).get('person')).trim(); void action(async () => { const intent = await store.creation('personCreation', name); const existing = (await engine.api.directory('people')).find(x => x.id === intent.id); if (!existing) await engine.api.createPerson(intent.id, intent.name); await directory(engine); await store.finishPersonCreation(intent.id); form.reset() }) }}><label>Person name<input name="person" required maxLength={100} /></label><button disabled={navigator.onLine === false}>Create Person (online)</button></form>}
           <ul>{view?.people.map(p => <li key={p.id}>{p.displayName}{p.archived ? ' (archived)' : ''}</li>)}</ul>
           <label>Saved record<select aria-label="Saved record" value={selected} onChange={e => setSelected(e.target.value)}><option value="">Choose a plan or saved session</option>{view?.plans.map(p => <option key={`plan:${p.id}`} value={`plan:${p.id}`}>Plan · {'name' in p ? p.name : p.id}</option>)}{view?.sessions.map(p => <option key={`session:${p.id}`} value={`session:${p.id}`}>Session · {'date' in p ? p.date : ''} · {p.id.slice(0, 8)}</option>)}</select></label>
-          {target && <><ul>{people.map((p, i) => <li key={`${p.personId}:${p.role}`}>{view?.people.find(x => x.id === p.personId)?.displayName ?? p.personId} · {p.role} <button onClick={() => tags(people.filter((_, index) => index !== i))}>Remove association</button></li>)}</ul><label>Add Person as subject<select aria-label="Add Person as subject" value="" onChange={e => { if (!people.some(p => p.personId === e.target.value && p.role === 'subject')) tags([...people, { personId: e.target.value, role: 'subject' }]) }}><option value="">Choose Person</option>{view?.people.filter(p => !p.archived).map(p => <option value={p.id} key={p.id}>{p.displayName}</option>)}</select></label><button onClick={() => { if (window.confirm('Delete this saved record locally and queue its deletion for the connected Space? A preserved copy remains exportable.')) void action(async () => { await store.delete(target.kind, target.value.id); setSelected('') }) }}>Delete selected record…</button></>}
+          {target && <><ul>{people.map((p, i) => <li key={`${p.personId}:${p.role}`}>{view?.people.find(x => x.id === p.personId)?.displayName ?? p.personId} · {p.role} <button onClick={() => tags(people.filter((_, index) => index !== i))}>Remove association</button></li>)}</ul><label>Add Person as subject<select aria-label="Add Person as subject" value="" onChange={e => { if (!people.some(p => p.personId === e.target.value && p.role === 'subject')) tags([...people, { personId: e.target.value, role: 'subject' }]) }}><option value="">Choose Person</option>{view?.people.filter(p => !p.archived).map(p => <option value={p.id} key={p.id}>{p.displayName}</option>)}</select></label><button onClick={() => requestConfirmation('Delete this saved record locally and queue its deletion for the connected Space? A preserved copy remains exportable.', () => void action(async () => { await store.delete(target.kind, target.value.id); setSelected('') }))}>Delete selected record…</button></>}
         </section>
         {s && <details className="sync-diagnostics"><summary>Diagnostics</summary>
           <dl><dt>Pending edits</dt><dd>{pending}</dd><dt>Connection phase</dt><dd>{s.phase}</dd>

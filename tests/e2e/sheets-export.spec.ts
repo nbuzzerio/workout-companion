@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { appConfig } from '../../config/app.ts'
+import { confirmAction } from '../support/confirmation.ts'
 
 const headers = '.\tDate\tDay\tExercise\tTarget\tActual\tRIR\tMobility\tPain/Notes\tCoach Notes'
 const date = '2026-11-18'
@@ -11,7 +12,6 @@ const rows = [
 
 test('previews and copies a completed workout, then re-exports it unchanged after reload', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-  page.on('dialog', dialog => void dialog.accept())
   await page.setViewportSize({ width: 320, height: 640 })
   await page.goto(appConfig.basePath)
   await page.getByLabel('Workout date').fill(date)
@@ -39,7 +39,7 @@ test('previews and copies a completed workout, then re-exports it unchanged afte
   await page.getByLabel('Reason for skipping (optional)').fill('Time limit')
   await page.getByRole('button', { name: 'Confirm Skip Exercise' }).click()
   await expect(exportWorkout).toHaveCount(0)
-  await page.getByRole('button', { name: 'Finish Workout' }).click()
+  await confirmAction(page, 'Finish Workout')
   await expect(exportWorkout).toBeVisible()
   const readHistory = () => page.evaluate(name => new Promise<string>((resolve, reject) => {
     const open = indexedDB.open(name)
